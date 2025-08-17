@@ -10,6 +10,9 @@ repository = "https://github.com/mic006/dir-sync"
 
 [dependencies]
 anyhow = "1.0.99"
+futures = "0.3.31"
+pin-project-lite = "0.2.16"
+tokio = { version = "1.47.1", features = ["full"] }
 
 [lints.rust]
 warnings = "warn"
