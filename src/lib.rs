@@ -1,13 +1,15 @@
-// generic helpers modules
-pub mod generic {
-    pub mod stream_ext;
-}
-
 /// Dummy main function
 ///
 /// # Errors
 /// N/A
-pub fn lib_main() -> anyhow::Result<std::process::ExitCode> {
+pub async fn lib_main() -> anyhow::Result<std::process::ExitCode> {
     println!("Hello World");
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     Ok(std::process::ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dummy_test() {}
 }
