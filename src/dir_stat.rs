@@ -11,6 +11,11 @@ use std::{
 //     Ok(())
 // }
 
+pub struct FileStat {
+    pub p: PathBuf,
+    pub size: u64,
+}
+
 pub struct DirStat {
     path: PathBuf,
 }
@@ -19,7 +24,7 @@ impl DirStat {
         Self { path: path.into() }
     }
 
-    pub fn task(self) -> anyhow::Result<Vec<PathBuf>> {
+    pub fn task(self) -> anyhow::Result<Vec<FileStat>> {
         let mut dir_stack = vec![self.path.clone()];
         let mut files = vec![];
 
@@ -31,7 +36,10 @@ impl DirStat {
                 if ft.is_dir() {
                     dir_stack.push(d.path());
                 } else if ft.is_file() && metadata.size() > 0 {
-                    files.push(d.path());
+                    files.push(FileStat {
+                        p: d.path(),
+                        size: metadata.size(),
+                    });
                 }
             }
         }

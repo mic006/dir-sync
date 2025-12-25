@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
+use crate::hasher::Hasher;
+
 mod dir_stat;
+mod hasher;
 
 /// Dummy main function
 ///
@@ -15,11 +18,13 @@ pub async fn lib_main() -> anyhow::Result<std::process::ExitCode> {
         .next()
         .ok_or_else(|| anyhow::anyhow!("Usage: dir-sync <path>"))?;
 
+    let hasher = Hasher::new();
     let dir_content = dir_stat::DirStat::new(Path::new(&path)).task()?;
 
     for f in dir_content {
-        println!("{}", f.display());
+        hasher.send(f.p, f.size);
     }
+    drop(hasher);
     tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     Ok(std::process::ExitCode::SUCCESS)
 }

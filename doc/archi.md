@@ -16,52 +16,9 @@ All metadata of the directory and its content
 
 ## Hasher
 
-Use Blake3, much faster than others
+Use Blake3, much faster than others.
 
-Several strategies, to be benchmarked:
-
-- single thread using `update_mmap_rayon()`
-- multiple threads using `update_mmap()`
-- smart dispatch:
-  - big files sent to a single thread using `update_mmap_rayon()`
-  - small files sent to a multi thread worker using `update_mmap()`
-
-Solution #1 may be faster on big files. And way faster on a single big file
-Solution #2 allows to tune the number of threads and shall be faster on small files (IO is parallelized, useless rayon overload not present)
-
-Solution #3 shall be the best of both worlds: single big file is fast, and multiple small files as well.
-
-```mermaid
-sequenceDiagram
-    actor Input
-    participant HasherEntry
-    participant HasherBig@{ "type" : "control" }
-    participant HasherSmall@{ "type" : "control" }
-    actor Output
-
-    activate HasherBig
-    activate HasherSmall
-
-    Input->>HasherEntry: hash(path, size)
-    alt big file
-        HasherEntry-->>HasherBig: hash(path, size)
-    else
-        HasherEntry-->>HasherSmall: hash(path, size)
-    end
-
-    loop
-        note over HasherBig: hash file using update_mmap_rayon()
-        HasherBig-->>Output: result(path, hash)
-    end
-
-    loop
-        note over HasherSmall: hash file using update_mmap()
-        HasherSmall-->>Output: result(path, hash)
-    end
-
-    deactivate HasherSmall
-    deactivate HasherBig
-```
+After benchmark, a single worker thread calling `update_mmap_rayon()` is the most efficient.
 
 ## Directory walking stage
 
