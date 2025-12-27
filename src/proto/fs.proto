@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package fs;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// Regular file information
+message RegularData {
+  // file size, in bytes
+  uint64 size = 1;
+  // data hash, not present for empty files
+  bytes hash = 2;
+}
+
+// Directory information
+message DirectoryData {
+  // directory content, sorted by ascending `file_name`
+  repeated MyDirEntry content = 1;
+}
+
+// Block / character devices information
+message DeviceData {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+// Directory entry information
+message MyDirEntry {
+  // file name, inside the directory
+  string file_name = 1;
+  // file type and access rights, on 16 LSB
+  uint32 mode = 2;
+  // numerical uid
+  uint32 uid = 3;
+  // numerical gid
+  uint32 gid = 4;
+  // modification time
+  google.protobuf.Timestamp mtime = 5;
+  // type of file, along with type specific data
+  oneof specific {
+    RegularData regular = 12;
+    DirectoryData directory = 13;
+    // block or character device
+    DeviceData device = 14;
+    // symlink target
+    string symlink = 15;
+  }
+}
+
+// Content of one directory
+message MyDirContent {
+  // relative path of directory to root directory, empty if root
+  string rel_path = 1;
+  // directory content, sorted by ascending `file_name`
+  repeated MyDirEntry entries = 2;
+}
