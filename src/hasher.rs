@@ -2,75 +2,96 @@
 
 use std::path::PathBuf;
 
+use blake3::Hash;
+
+use crate::generic::task_tracker::{TaskExit, TaskTracker};
+
+/// Input message for `Hasher`
+pub struct HasherInput {
+    path: PathBuf,
+    callback: Box<dyn FnOnce(HasherOutput) + Send + Sync + 'static>,
+}
+
+pub type HasherSender = flume::Sender<HasherInput>;
+
+/// Output message of `Hasher`
+pub struct HasherOutput {
+    path: PathBuf,
+    hash: Hash,
+}
+
 pub struct Hasher {
-    sender_small: flume::Sender<PathBuf>,
-    sender_big: flume::Sender<PathBuf>,
+    task_tracker: TaskTracker,
+    receiver: flume::Receiver<HasherInput>,
 }
 impl Hasher {
-    pub fn new() -> Self {
-        if let Ok(threads) = std::env::var("DBG_HASH_MMAP_THREADS") {
-            let nb_threads = threads.parse::<u8>().unwrap();
-            let (sender, receiver) = flume::unbounded();
-            for _ in 0..nb_threads {
-                tokio::task::spawn_blocking({
-                    let receiver = receiver.clone();
-                    || hash_mmap_task(receiver)
-                });
-            }
-            Self {
-                sender_small: sender.clone(),
-                sender_big: sender,
-            }
-        } else if let Ok(threads) = std::env::var("DBG_HASH_MIX_THREADS") {
-            let nb_threads = threads.parse::<u8>().unwrap();
-            let (sender_small, receiver_small) = flume::unbounded();
-            let (sender_big, receiver_big) = flume::unbounded();
-            for _ in 0..nb_threads {
-                tokio::task::spawn_blocking({
-                    let receiver = receiver_small.clone();
-                    || hash_mmap_task(receiver)
-                });
-            }
-            tokio::task::spawn_blocking(|| hash_rayon_task(receiver_big));
-            Self {
-                sender_small,
-                sender_big,
-            }
-        } else {
-            let (sender, receiver) = flume::unbounded();
-            tokio::task::spawn_blocking(|| hash_rayon_task(receiver));
-            Self {
-                sender_small: sender.clone(),
-                sender_big: sender,
-            }
-        }
+    pub fn spawn(task_tracker: &TaskTracker) -> anyhow::Result<HasherSender> {
+        let (sender, receiver) = flume::unbounded();
+        let instance = Self {
+            task_tracker: task_tracker.clone(),
+            receiver,
+        };
+        task_tracker.spawn_blocking(|| instance.task())?;
+        Ok(sender)
     }
 
-    pub fn send(&self, p: PathBuf, size: u64) {
-        if size < 128 * 1024 {
-            self.sender_small.send(p).unwrap();
-        } else {
-            self.sender_big.send(p).unwrap();
+    fn task(self) -> anyhow::Result<TaskExit> {
+        while let Ok(input) = self.receiver.recv() {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update_mmap_rayon(&input.path)?;
+            let hash = hasher.finalize();
+            (input.callback)(HasherOutput {
+                path: input.path,
+                hash,
+            });
         }
+        Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 }
 
-fn hash_rayon_task(recv: flume::Receiver<PathBuf>) -> anyhow::Result<()> {
-    while let Ok(p) = recv.recv() {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update_mmap_rayon(&p)?;
-        println!("{}  {}", hasher.finalize(), p.display());
-    }
-    println!("thread end");
-    Ok(())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn hash_mmap_task(recv: flume::Receiver<PathBuf>) -> anyhow::Result<()> {
-    while let Ok(p) = recv.recv() {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update_mmap(&p)?;
-        println!("{}  {}", hasher.finalize(), p.display());
+    use crate::generic::task_tracker::TaskTrackerMain;
+
+    #[tokio::test]
+    async fn test_hasher() -> anyhow::Result<()> {
+        // create test dir with some content
+        let test_dir = tempfile::tempdir()?;
+        let test_dir_path = test_dir.path();
+        let file_path = test_dir_path.join("file");
+        std::fs::write(&file_path, "content")?;
+
+        // launch Hasher
+        let mut task_tracker_main = TaskTrackerMain::default();
+        let task_tracker = task_tracker_main.tracker();
+        let hasher_sender = Hasher::spawn(&task_tracker)?;
+        drop(task_tracker);
+
+        // request file hash
+        let (result_sender, result_receiver) = flume::unbounded();
+        hasher_sender.send(HasherInput {
+            path: file_path.clone(),
+            callback: Box::new(move |output| result_sender.send(output).unwrap()),
+        })?;
+        drop(hasher_sender);
+
+        let result = result_receiver
+            .into_iter()
+            .map(|output| (output.path, output.hash.to_string()))
+            .collect::<Vec<_>>();
+        println!("{result:?}");
+        assert_eq!(
+            result,
+            vec![(
+                file_path,
+                String::from("3fba5250be9ac259c56e7250c526bc83bacb4be825f2799d3d59e5b4878dd74e")
+            )]
+        );
+
+        task_tracker_main.request_stop();
+        task_tracker_main.wait().await?;
+        Ok(())
     }
-    println!("thread end");
-    Ok(())
 }
