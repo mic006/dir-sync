@@ -1,0 +1,15 @@
+profiles:
+  base:
+    ignore_name:
+      - "*.bak"
+      - "*.o"
+      - "*.old"
+      - "*~"
+      - ".git"
+
+  data:
+    include: base
+    consider:
+      - "folder/foo~/toto.bak"
+    ignore_path:
+      - "*/bar"

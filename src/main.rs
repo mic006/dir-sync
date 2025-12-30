@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use clap::Parser as _;
 
+pub mod config;
 mod dir_stat;
 mod dir_walk;
 pub mod generic {
