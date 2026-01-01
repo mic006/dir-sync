@@ -8,6 +8,7 @@ pub mod config;
 mod dir_stat;
 mod dir_walk;
 pub mod generic {
+    pub mod fs;
     pub mod path_regex;
     pub mod task_tracker;
     pub mod test;

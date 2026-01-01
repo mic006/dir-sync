@@ -11,6 +11,7 @@ repository = "https://github.com/mic006/dir-sync"
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
 blake3 = { version = "1.8.2", features = ["mmap", "rayon"] }
+bytes = "1.11.0"
 clap = { version = "4.5.53", features = ["derive"] }
 env_logger = "0.11.8"
 flume = "0.12.0"

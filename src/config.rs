@@ -7,6 +7,9 @@ use std::str::FromStr;
 use anyhow::Context as _;
 use serde::Deserialize;
 
+use crate::generic::fs::PathExt as _;
+use crate::generic::path_regex::PathRegexBuilder;
+
 /// Default configuration path
 pub const DEFAULT_CFG_PATH: &str = "/etc/dir-sync.conf.yaml";
 
@@ -30,6 +33,40 @@ impl Config {
         let config_str = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config file at '{}'", path.display()))?;
         Self::from_str(&config_str)
+    }
+
+    /// Get file matcher for the wanted profile
+    ///
+    /// # Errors
+    /// * invalid profile (profile not found, or include profile not found)
+    pub fn get_file_matcher(&self, profile: &str) -> anyhow::Result<FileMatcher> {
+        let mut ignore_name_regex_builder = PathRegexBuilder::new_name();
+        let mut ignore_path_regex_builder = PathRegexBuilder::new_path();
+        let mut white_list = vec![];
+
+        let mut profiles = vec![profile];
+
+        while let Some(prof_name) = profiles.pop() {
+            let Some(prof_data) = self.profiles.get(prof_name) else {
+                anyhow::bail!("config error: invalid reference to profile '{prof_name}'");
+            };
+            for p in &*prof_data.include {
+                profiles.push(p);
+            }
+            for p in &prof_data.ignore_name {
+                ignore_name_regex_builder.add_pattern(p);
+            }
+            for p in &prof_data.ignore_path {
+                ignore_path_regex_builder.add_pattern(p.checked_as_str()?);
+            }
+            white_list.extend_from_slice(&prof_data.white_list);
+        }
+
+        Ok(FileMatcher {
+            ignore_name_regex: ignore_name_regex_builder.finalize()?,
+            ignore_path_regex: ignore_path_regex_builder.finalize()?,
+            white_list,
+        })
     }
 }
 impl FromStr for Config {
@@ -67,7 +104,7 @@ impl<T> ::std::ops::Deref for ZeroOrOneOrList<T> {
 
 /// Per profile configuration
 #[derive(Deserialize, Debug, PartialEq)]
-pub struct Profile {
+struct Profile {
     /// Include other profile(s)
     #[serde(default)]
     include: ZeroOrOneOrList<String>,
@@ -81,7 +118,35 @@ pub struct Profile {
     ignore_path: Vec<PathBuf>,
     /// Relative paths to be considered, even if a parent folder is ignored
     #[serde(default)]
-    consider: Vec<PathBuf>,
+    white_list: Vec<PathBuf>,
+}
+
+#[derive(Clone)]
+pub struct FileMatcher {
+    /// File/directory names to be ignored, at any level
+    ignore_name_regex: regex::Regex,
+    /// Relative paths to be ignored
+    ignore_path_regex: regex::Regex,
+    /// Relative paths to be considered, even if a parent folder is ignored
+    white_list: Vec<PathBuf>,
+}
+impl FileMatcher {
+    #[must_use]
+    pub fn is_ignored(&self, name: &str, rel_path: &Path) -> bool {
+        // white list: any path needed to access a considered entry
+        if self
+            .white_list
+            .iter()
+            .any(|consider| consider.starts_with(rel_path))
+        {
+            return false;
+        }
+        // ignore based on name or path
+        self.ignore_name_regex.is_match(name)
+            || self
+                .ignore_path_regex
+                .is_match(rel_path.checked_as_str().unwrap())
+    }
 }
 
 #[cfg(test)]
@@ -94,7 +159,6 @@ pub mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
     fn load_cfg() {
         let cfg = load_ut_cfg().unwrap();
         let expected_cfg = Config {
@@ -111,7 +175,7 @@ pub mod tests {
                             String::from(".git"),
                         ],
                         ignore_path: vec![],
-                        consider: vec![],
+                        white_list: vec![],
                     },
                 ),
                 (
@@ -120,11 +184,27 @@ pub mod tests {
                         include: ZeroOrOneOrList::One(String::from("base")),
                         ignore_name: vec![],
                         ignore_path: vec![PathBuf::from("*/bar")],
-                        consider: vec![PathBuf::from("folder/foo~/toto.bak")],
+                        white_list: vec![PathBuf::from("folder/foo~/toto.bak")],
                     },
                 ),
             ]),
         };
         assert_eq!(cfg, expected_cfg);
+    }
+
+    #[test]
+    fn test_cfg_get_file_matcher() {
+        let cfg = load_ut_cfg().unwrap();
+        assert!(cfg.get_file_matcher("unknown").is_err());
+        let file_matcher = cfg.get_file_matcher("data").unwrap();
+
+        assert!(file_matcher.is_ignored("toto.bak", Path::new("toto.bak")));
+        assert!(!file_matcher.is_ignored("bar", Path::new("bar")));
+        assert!(file_matcher.is_ignored("bar", Path::new("foo/bar")));
+        assert!(!file_matcher.is_ignored("bar", Path::new("foo/sub/bar")));
+        assert!(file_matcher.is_ignored("baz~", Path::new("folder/baz~")));
+        assert!(!file_matcher.is_ignored("foo~", Path::new("folder/foo~")));
+        assert!(!file_matcher.is_ignored("toto.bak", Path::new("folder/foo~/toto.bak")));
+        assert!(file_matcher.is_ignored("titi.bak", Path::new("folder/foo~/titi.bak")));
     }
 }

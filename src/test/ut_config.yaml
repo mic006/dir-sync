@@ -9,7 +9,7 @@ profiles:
 
   data:
     include: base
-    consider:
+    white_list:
       - "folder/foo~/toto.bak"
     ignore_path:
       - "*/bar"

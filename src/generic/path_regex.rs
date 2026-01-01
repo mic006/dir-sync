@@ -1,47 +1,61 @@
 //! Path regex manipulation
 
-/// Generate a name regex from path-like patterns
-///
-/// "*" represents any number of characters, including leading ".".
-/// The resulting regex will match any of the input patterns.
-///
-/// # Errors
-/// * invalid final regex (unexpected, as regex characters in input patterns are escaped)
-pub fn gen_name_regex<I>(patterns: I) -> anyhow::Result<regex::Regex>
-where
-    I: IntoIterator,
-    I::Item: AsRef<str>,
-{
-    let mut re = String::with_capacity(1024);
-    re.push_str("^(?:");
-    for pattern in patterns {
-        re.push_str(&gen_name_pattern(pattern.as_ref()));
-        re.push('|');
-    }
-    re.push_str(")$");
-    Ok(regex::Regex::new(&re)?)
+/// Builder for regex matching some name/paths
+pub struct PathRegexBuilder {
+    /// Function to generate one regex block from a path pattern
+    pattern_builder: fn(&str) -> String,
+    /// Build final regex matching any input pattern
+    re: String,
+    /// First / subsequent pattern insertion
+    subsequent: bool,
 }
-
-/// Generate a path regex from path-like patterns
-///
-/// "*" represents any number of characters excluding "/".
-/// The resulting regex will match any of the input patterns.
-///
-/// # Errors
-/// * invalid final regex (unexpected, as regex characters in input patterns are escaped)
-pub fn gen_path_regex<I>(patterns: I) -> anyhow::Result<regex::Regex>
-where
-    I: IntoIterator,
-    I::Item: AsRef<str>,
-{
-    let mut re = String::with_capacity(1024);
-    re.push_str("^(?:");
-    for pattern in patterns {
-        re.push_str(&gen_path_pattern(pattern.as_ref()));
-        re.push('|');
+impl PathRegexBuilder {
+    /// Generate a name regex from path-like patterns
+    ///
+    /// "*" represents any number of characters, including leading ".".
+    /// The resulting regex will match any of the input patterns.
+    #[must_use]
+    pub fn new_name() -> Self {
+        Self {
+            pattern_builder: gen_name_pattern,
+            re: String::with_capacity(4096),
+            subsequent: false,
+        }
     }
-    re.push_str(")$");
-    Ok(regex::Regex::new(&re)?)
+
+    /// Generate a path regex from path-like patterns
+    ///
+    /// "*" represents any number of characters excluding "/".
+    /// The resulting regex will match any of the input patterns.
+    #[must_use]
+    pub fn new_path() -> Self {
+        Self {
+            pattern_builder: gen_path_pattern,
+            re: String::with_capacity(4096),
+            subsequent: false,
+        }
+    }
+
+    /// Add matching pattern in the regex
+    pub fn add_pattern(&mut self, pattern: &str) {
+        if self.subsequent {
+            self.re.push('|');
+        } else {
+            self.re.push_str("^(?:");
+            self.subsequent = true;
+        }
+        self.re.push_str(&(self.pattern_builder)(pattern));
+    }
+
+    /// Generate the regex matching any of the input patterns
+    ///
+    /// # Errors
+    /// * invalid final regex (unexpected, as regex characters in input patterns are escaped)
+    pub fn finalize(mut self) -> anyhow::Result<regex::Regex> {
+        anyhow::ensure!(self.subsequent, "Need to add at least one pattern to match");
+        self.re.push_str(")$");
+        Ok(regex::Regex::new(&self.re)?)
+    }
 }
 
 /// Generate a name regex pattern from a path-like pattern
@@ -63,9 +77,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_gen_name_regex() {
-        let patterns = vec!["*.bak", "*.o", "*.old", "*~", ".git", "[12].gz"];
-        let re = gen_name_regex(&patterns).unwrap();
+    fn test_build_name_regex() {
+        let mut builder = PathRegexBuilder::new_name();
+        for pattern in ["*.bak", "*.o", "*.old", "*~", ".git", "[12].gz"] {
+            builder.add_pattern(pattern);
+        }
+        let re = builder.finalize().unwrap();
 
         assert!(re.is_match("foo.bak"));
         assert!(!re.is_match("foo.bak.gz"));
@@ -82,8 +99,11 @@ mod tests {
 
     #[test]
     fn test_gen_path_regex() {
-        let patterns = vec!["*/bar", "foo/$baz/*/*.gz"];
-        let re = gen_path_regex(&patterns).unwrap();
+        let mut builder = PathRegexBuilder::new_path();
+        for pattern in ["*/bar", "foo/$baz/*/*.gz"] {
+            builder.add_pattern(pattern);
+        }
+        let re = builder.finalize().unwrap();
 
         assert!(re.is_match("xxx/bar"));
         assert!(!re.is_match("bar"));
