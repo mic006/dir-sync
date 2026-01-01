@@ -121,6 +121,7 @@ struct Profile {
     white_list: Vec<PathBuf>,
 }
 
+/// Determine name/paths to be ignored
 #[derive(Clone)]
 pub struct FileMatcher {
     /// File/directory names to be ignored, at any level
