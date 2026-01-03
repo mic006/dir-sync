@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package persist;
+
+import "google/protobuf/timestamp.proto";
+
+import "common.proto";
+
+// Snapshot of metadata of one folder
+message MetadataSnap {
+  // timestamp of capture
+  google.protobuf.Timestamp ts = 1;
+  // directory information
+  common.MyDirEntry root = 2;
+}

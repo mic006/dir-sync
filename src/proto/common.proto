@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package common;
 
-import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
 // Regular file information

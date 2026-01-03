@@ -51,17 +51,20 @@ pub trait MessageExt: Sized {
 }
 impl<M: prost::Message + Default> MessageExt for M {
     fn load_from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let mut f = File::open(path)?;
+        let f = File::open(path)?;
+        let mut c = zstd::stream::Decoder::new(f)?;
         let mut b = BytesMut::new().writer();
-        std::io::copy(&mut f, &mut b)?;
+        std::io::copy(&mut c, &mut b)?;
         Ok(Self::decode(b.into_inner())?)
     }
 
     fn save_to_file<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
-        let mut f = File::create(path)?;
+        let f = File::create(path)?;
+        let mut c = zstd::stream::Encoder::new(f, 0)?;
         let mut buf = BytesMut::new();
         self.encode(&mut buf)?;
-        std::io::copy(&mut buf.reader(), &mut f)?;
+        std::io::copy(&mut buf.reader(), &mut c)?;
+        c.finish()?;
         Ok(())
     }
 }
@@ -107,7 +110,7 @@ mod tests {
             value: 42,
         };
 
-        let p = test_dir.path().join("test_msg.pb.bin");
+        let p = test_dir.path().join("test_msg.pb.bin.zst");
         src.save_to_file(&p)?;
 
         let read = TestMessage::load_from_file(&p)?;
