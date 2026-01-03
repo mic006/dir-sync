@@ -23,12 +23,6 @@ namespace proto {
     }
 }
 namespace dir_sync {
-    class Hasher {
-        Dedicated thread running Blake3 hasher
-        --
-        Input: stream of `PathBuf`
-        Output: stream of `PathBuf, Hash`
-    }
     class DirWalk {
         Dedicated thread walking a directory
         Output the content of each directory:
@@ -39,10 +33,10 @@ namespace dir_sync {
         Input: `PathBuf`
         Output: stream of `proto::DirContent` without hash
     }
-    class AddHash {
+    class DirStat {
         Add Hash for all regular files:
         - from a previous scan if available
-        - otherwise request Hasher to do the hashing
+        - otherwise compute hash
         --
         Input: stream of `proto::DirContent` without hash + old snap
         Output: stream of `proto::DirContent` with hash
@@ -51,17 +45,7 @@ namespace dir_sync {
         Wrap SSH instance of dir-sync
         Generate a stream of `proto::DirContent` with hash        
     }
-    class DiffDirect {
-        Direct comparison of directories - do not use hasher:
-        - get directories from all inputs
-        - compare entries; if two files may be different - same relative path, same size but different mtime -
-        compare their content
-        - output identified differences
-        --
-        Input: multiple streams of `proto::DirContent`, without hash
-        Output: stream of delta
-    }
-    class DiffHash {
+    class DirDiff {
         Compare directories using hash:
         - get directories from all inputs
         - compare entries - file size and file hash
@@ -113,6 +97,30 @@ Examples:
 - diff status: DirWalk + DiffDirect + OutputStatus
 - sync batch: DirWalk + AddHash + DiffHash + Sync + ExecSyncActions
 - TUI: DirWalk + AddHash + DiffHash + Sync + OutputTui + ExecSyncActions
+
+## Usage
+
+gestion des profiles ?
+config yaml
+
+dir-sync --status -> diff, status only
+dir-sync --output -> diff, output to stdout
+dir-sync --sync -> sync, batch mode, output = opérations faites
+dir-sync --sum -> perform stat + blake3 hash on one folder
+dir-sync --remote -> remote mode, information sent over stdin / stdout
+dir-sync --profile -> apply specific settings for sync
+dir-sync -> TUI par défaut; sans profile, diff, avec profile, sync
+
+profiles ?
+
+ignore names -> plutôt global ?
+ignore path -> plutôt par profile
+
+séparer le cache b3sum (basé répertoire) du cache sync (basé machines ?)
+comment supprimer ces caches sinon ?
+-> lien symbolique: latest + par machine
+
+## DRAFT
 
 ## MetadataSnap
 

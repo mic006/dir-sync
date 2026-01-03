@@ -11,7 +11,7 @@ use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 // generated code from proto files
 include!(concat!(env!("OUT_DIR"), "/mod.rs"));
 
-pub use fs::{MyDirContent, MyDirEntry};
+pub use common::{MyDirContent, MyDirEntry};
 
 /// Null value for google.protobuf.NullValue fields
 pub const PROTO_NULL_VALUE: i32 = 0;
@@ -44,7 +44,7 @@ where
 impl MyDirEntryExt for MyDirEntry {
     fn try_from_std_fs(value: std::fs::DirEntry) -> anyhow::Result<Self> {
         /// Build `DeviceData` from rdev value
-        fn build_device_data(rdev: u64) -> fs::DeviceData {
+        fn build_device_data(rdev: u64) -> common::DeviceData {
             /// Get major id from rdev value
             fn major(rdev: u64) -> u32 {
                 // code from Glibc bits/sysmacros.h
@@ -59,7 +59,7 @@ impl MyDirEntryExt for MyDirEntry {
                 minor |= ((rdev & 0x0000_0fff_fff0_0000_u64) >> 12) as u32;
                 minor
             }
-            fs::DeviceData {
+            common::DeviceData {
                 major: major(rdev),
                 minor: minor(rdev),
             }
@@ -68,19 +68,21 @@ impl MyDirEntryExt for MyDirEntry {
         let metadata = value.metadata()?;
         let fs_file_type = metadata.file_type();
         let specific = if fs_file_type.is_file() {
-            Some(fs::my_dir_entry::Specific::Regular(fs::RegularData {
-                size: metadata.size(),
-                hash: Default::default(),
-            }))
+            Some(common::my_dir_entry::Specific::Regular(
+                common::RegularData {
+                    size: metadata.size(),
+                    hash: Default::default(),
+                },
+            ))
         } else if fs_file_type.is_dir() {
             // content is unknown at this time
             None
         } else if fs_file_type.is_block_device() || fs_file_type.is_char_device() {
-            Some(fs::my_dir_entry::Specific::Device(build_device_data(
+            Some(common::my_dir_entry::Specific::Device(build_device_data(
                 metadata.rdev(),
             )))
         } else if fs_file_type.is_symlink() {
-            Some(fs::my_dir_entry::Specific::Symlink(
+            Some(common::my_dir_entry::Specific::Symlink(
                 value
                     .path()
                     .read_link()?
