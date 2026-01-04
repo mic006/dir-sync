@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::dir_walk::DirWalkReceiver;
 use crate::generic::fs::MessageExt;
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
-use crate::proto::{MetadataSnap, MyDirEntryExt as _, Specific};
+use crate::proto::{MetadataSnap, MetadataSnapExt as _, MyDirEntryExt as _, Specific};
 
 /// Hash file, using blake3
 fn hash(path: &Path) -> anyhow::Result<blake3::Hash> {
@@ -25,10 +25,11 @@ impl DirStat {
         path: PathBuf,
         receiver: DirWalkReceiver,
     ) -> anyhow::Result<()> {
+        let snap = MetadataSnap::new(&path)?;
         let instance = Self {
             path,
             receiver,
-            snap: MetadataSnap::default(),
+            snap,
         };
         task_tracker.spawn_blocking(|| instance.task())?;
         Ok(())

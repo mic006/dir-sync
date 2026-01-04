@@ -15,16 +15,21 @@ include!(concat!(env!("OUT_DIR"), "/mod.rs"));
 
 pub use common::{DeviceData, DirectoryData, MyDirEntry, RegularData, my_dir_entry::Specific};
 pub use persist::MetadataSnap;
+pub use prost_types::Timestamp;
 
 /// Null value for google.protobuf.NullValue fields
 pub const PROTO_NULL_VALUE: i32 = 0;
 
+/// Extension to `MyDirEntry`
 pub trait MyDirEntryExt
 where
     Self: Sized,
 {
     /// Convert standard library entry to `MyDirEntry`
     fn try_from_std_fs(value: std::fs::DirEntry) -> anyhow::Result<Self>;
+
+    /// Create entry from metadata content
+    fn try_from_metadata(path: &Path, metadata: std::fs::Metadata) -> anyhow::Result<Self>;
 
     /// Key for sorting
     fn sort_key(&self) -> &str;
@@ -52,6 +57,10 @@ where
 
 impl MyDirEntryExt for MyDirEntry {
     fn try_from_std_fs(value: std::fs::DirEntry) -> anyhow::Result<Self> {
+        Self::try_from_metadata(&value.path(), value.metadata()?)
+    }
+
+    fn try_from_metadata(path: &Path, metadata: std::fs::Metadata) -> anyhow::Result<Self> {
         /// Build `DeviceData` from rdev value
         fn build_device_data(rdev: u64) -> DeviceData {
             /// Get major id from rdev value
@@ -74,7 +83,6 @@ impl MyDirEntryExt for MyDirEntry {
             }
         }
 
-        let metadata = value.metadata()?;
         let fs_file_type = metadata.file_type();
         let specific = if fs_file_type.is_fifo() {
             Specific::Fifo(PROTO_NULL_VALUE)
@@ -92,31 +100,25 @@ impl MyDirEntryExt for MyDirEntry {
             })
         } else if fs_file_type.is_symlink() {
             Specific::Symlink(
-                value
-                    .path()
-                    .read_link()?
+                path.read_link()?
                     .to_str()
                     .ok_or_else(|| {
-                        anyhow::anyhow!("Invalid UTF-8 for symlink at '{}'", value.path().display())
+                        anyhow::anyhow!("Invalid UTF-8 for symlink at '{}'", path.display())
                     })?
                     .into(),
             )
         } else if fs_file_type.is_socket() {
             Specific::Socket(PROTO_NULL_VALUE)
         } else {
-            anyhow::bail!("Unsupported file type at '{}'", value.path().display());
+            anyhow::bail!("Unsupported file type at '{}'", path.display());
         };
-        let file_name = value
+        let file_name = path
             .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path '{}'", path.display()))?
             .to_str()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Invalid UTF-8 for file name at '{}'",
-                    value.path().display()
-                )
-            })?
+            .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 for file name at '{}'", path.display()))?
             .into();
-        let mtime = Some(prost_types::Timestamp {
+        let mtime = Some(Timestamp {
             seconds: metadata.mtime(),
             nanos: metadata.mtime_nsec() as i32,
         });
@@ -176,5 +178,46 @@ impl MyDirEntryExt for MyDirEntry {
         dir_data.content = entries;
 
         Ok(())
+    }
+}
+
+/// Extension to `MetadataSnap`
+pub trait MetadataSnapExt
+where
+    Self: Sized,
+{
+    /// Create new instance for given root
+    fn new(path: &Path) -> anyhow::Result<Self>;
+}
+
+impl MetadataSnapExt for MetadataSnap {
+    fn new(path: &Path) -> anyhow::Result<Self> {
+        let root = MyDirEntry::try_from_metadata(path, std::fs::metadata(path)?)?;
+        Ok(Self {
+            ts: Some(Timestamp::now()),
+            root: Some(root),
+        })
+    }
+}
+
+/// Extension to `prost_types::Timestamp`
+pub trait TimestampExt
+where
+    Self: Sized,
+{
+    /// Get current time as timestamp
+    fn now() -> Self;
+}
+
+impl TimestampExt for Timestamp {
+    fn now() -> Self {
+        use std::time::SystemTime;
+        let d = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        Self {
+            seconds: d.as_secs() as i64,
+            nanos: d.subsec_nanos() as i32,
+        }
     }
 }
