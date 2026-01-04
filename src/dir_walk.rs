@@ -4,9 +4,17 @@ use std::path::{Path, PathBuf};
 
 use crate::config::FileMatcher;
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
-use crate::proto::{self, MyDirContent, MyDirEntry, MyDirEntryExt as _};
+use crate::proto::{MyDirEntry, MyDirEntryExt as _};
 
-pub type DirWalkReceiver = flume::Receiver<MyDirContent>;
+pub type DirWalkReceiver = flume::Receiver<DirContent>;
+
+/// Content of one directory
+pub struct DirContent {
+    /// relative path of directory to root directory, empty if root
+    pub rel_path: PathBuf,
+    /// directory content, unsorted
+    pub entries: Vec<MyDirEntry>,
+}
 
 /// Walk a local directory
 /// Output the content of each directory:
@@ -19,7 +27,7 @@ pub struct DirWalk {
     /// Determine name/paths to be ignored
     file_matcher: Option<FileMatcher>,
     /// content sender
-    sender: flume::Sender<MyDirContent>,
+    sender: flume::Sender<DirContent>,
 }
 impl DirWalk {
     pub fn spawn(
@@ -42,7 +50,7 @@ impl DirWalk {
 
         while let Some(rel_path) = dir_stack.pop() {
             let full_path = self.base.join(&rel_path);
-            let mut entries = std::fs::read_dir(&full_path)?
+            let entries = std::fs::read_dir(&full_path)?
                 // filter ignored entries ASAP
                 .filter_map(|e| match e {
                     Ok(e) => {
@@ -53,27 +61,18 @@ impl DirWalk {
                             // ignored entry
                             None
                         } else {
-                            Some(Ok(e))
+                            Some(MyDirEntry::try_from_std_fs(e))
                         }
                     }
-                    Err(err) => Some(Err(err)),
+                    Err(err) => Some(Err(anyhow::anyhow!("IO error: {err}"))),
                 })
-                .collect::<std::io::Result<Vec<_>>>()?;
-
-            entries.sort_by_key(std::fs::DirEntry::file_name);
-            let entries = entries
-                .into_iter()
-                .map(MyDirEntry::try_from_std_fs)
                 .collect::<anyhow::Result<Vec<_>>>()?;
             for e in entries.iter().rev() {
-                if e.file_type() == proto::MY_FILE_TYPE_DIRECTORY {
+                if e.is_dir() {
                     dir_stack.push(rel_path.join(&e.file_name));
                 }
             }
-            self.sender.send(MyDirContent {
-                rel_path: rel_path.to_string_lossy().to_string(),
-                entries,
-            })?;
+            self.sender.send(DirContent { rel_path, entries })?;
         }
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
@@ -117,16 +116,16 @@ mod tests {
         let received = receiver
             .into_iter()
             .map(|dc| {
-                (
-                    dc.rel_path,
-                    dc.entries
-                        .into_iter()
-                        .map(|e| {
-                            let file_type = e.file_type();
-                            (e.file_name, file_type)
-                        })
-                        .collect::<Vec<_>>(),
-                )
+                let mut entries = dc
+                    .entries
+                    .into_iter()
+                    .map(|e| {
+                        let is_file = e.is_file();
+                        (e.file_name, is_file)
+                    })
+                    .collect::<Vec<_>>();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                (dc.rel_path, entries)
             })
             .collect::<Vec<_>>();
         println!("{received:?}");
@@ -134,28 +133,25 @@ mod tests {
             received,
             vec![
                 (
-                    String::new(),
+                    PathBuf::new(),
                     vec![
-                        (String::from("empty file"), proto::MY_FILE_TYPE_REGULAR),
-                        (String::from("empty_folder"), proto::MY_FILE_TYPE_DIRECTORY),
-                        (String::from("some file"), proto::MY_FILE_TYPE_REGULAR),
-                        (
-                            String::from("sub folder 2 €"),
-                            proto::MY_FILE_TYPE_DIRECTORY
-                        ),
-                        (String::from("sub_folder1"), proto::MY_FILE_TYPE_DIRECTORY)
+                        (String::from("empty file"), true),
+                        (String::from("empty_folder"), false),
+                        (String::from("some file"), true),
+                        (String::from("sub folder 2 €"), false),
+                        (String::from("sub_folder1"), false)
                     ]
                 ),
-                (String::from("empty_folder"), vec![]),
+                (PathBuf::from("empty_folder"), vec![]),
                 (
-                    String::from("sub folder 2 €"),
-                    vec![(String::from("beta"), proto::MY_FILE_TYPE_REGULAR)]
+                    PathBuf::from("sub folder 2 €"),
+                    vec![(String::from("beta"), true)]
                 ),
                 (
-                    String::from("sub_folder1"),
-                    vec![(String::from("empty"), proto::MY_FILE_TYPE_DIRECTORY)]
+                    PathBuf::from("sub_folder1"),
+                    vec![(String::from("empty"), false)]
                 ),
-                (String::from("sub_folder1/empty"), vec![])
+                (PathBuf::from("sub_folder1/empty"), vec![])
             ]
         );
 

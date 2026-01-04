@@ -1,50 +1,64 @@
-//! Walk trough a directory and get metadata of its content
+//! Complete a `MetadataSnap` by adding files hash
 
-use std::{
-    os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-// Get metadata content of the provided directory
-// pub fn dir_stat(path: &Path) -> anyhow::Result<()> {
-//     tokio::spawn(DirStat::new(path).task());
-//     Ok(())
-// }
+use crate::dir_walk::DirWalkReceiver;
+use crate::generic::fs::MessageExt;
+use crate::generic::task_tracker::{TaskExit, TaskTracker};
+use crate::proto::{MetadataSnap, MyDirEntryExt as _, Specific};
 
-pub struct FileStat {
-    pub p: PathBuf,
-    pub size: u64,
+/// Hash file, using blake3
+fn hash(path: &Path) -> anyhow::Result<blake3::Hash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_mmap_rayon(path)?;
+    Ok(hasher.finalize())
 }
 
 pub struct DirStat {
     path: PathBuf,
+    receiver: DirWalkReceiver,
+    snap: MetadataSnap,
 }
 impl DirStat {
-    pub fn new(path: &Path) -> Self {
-        Self { path: path.into() }
+    pub fn spawn(
+        task_tracker: &TaskTracker,
+        path: PathBuf,
+        receiver: DirWalkReceiver,
+    ) -> anyhow::Result<()> {
+        let instance = Self {
+            path,
+            receiver,
+            snap: MetadataSnap::default(),
+        };
+        task_tracker.spawn_blocking(|| instance.task())?;
+        Ok(())
     }
 
-    pub fn task(self) -> anyhow::Result<Vec<FileStat>> {
-        let mut dir_stack = vec![self.path.clone()];
-        let mut files = vec![];
-
-        while let Some(dir) = dir_stack.pop() {
-            for d in std::fs::read_dir(&dir)? {
-                let d = d?;
-                let metadata = d.metadata()?;
-                let ft = metadata.file_type();
-                if ft.is_dir() {
-                    dir_stack.push(d.path());
-                } else if ft.is_file() && metadata.size() > 0 {
-                    files.push(FileStat {
-                        p: d.path(),
-                        size: metadata.size(),
-                    });
+    fn task(mut self) -> anyhow::Result<TaskExit> {
+        while let Ok(mut input) = self.receiver.recv() {
+            let rel_path = self.path.join(&input.rel_path);
+            // add hash of files
+            for f in &mut input.entries {
+                if let Some(Specific::Regular(file_data)) = &mut f.specific
+                    && file_data.size != 0
+                {
+                    let path = rel_path.join(&f.file_name);
+                    file_data.hash = hash(&path)?.as_bytes().into();
                 }
             }
+
+            // add in collection
+            self.snap
+                .root
+                .as_mut()
+                .unwrap()
+                .insert(&input.rel_path, input.entries)?;
         }
 
-        //tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        Ok(files)
+        // TODO: remove
+        self.snap
+            .save_to_file(Path::new("/tmp/autoclean/meta_snap.pb.bin.zst"))?;
+
+        Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 }

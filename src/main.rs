@@ -13,7 +13,6 @@ pub mod generic {
     pub mod task_tracker;
     pub mod test;
 }
-mod hasher;
 pub mod proto;
 
 /// Dir-sync

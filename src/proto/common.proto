@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package common;
 
+import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
 // Regular file information
@@ -28,8 +29,8 @@ message DeviceData {
 message MyDirEntry {
   // file name, inside the directory
   string file_name = 1;
-  // file type and access rights, on 16 LSB
-  uint32 mode = 2;
+  // access rights, on 12 LSB
+  uint32 permissions = 2;
   // numerical uid
   uint32 uid = 3;
   // numerical gid
@@ -38,19 +39,12 @@ message MyDirEntry {
   google.protobuf.Timestamp mtime = 5;
   // type of file, along with type specific data
   oneof specific {
-    RegularData regular = 12;
-    DirectoryData directory = 13;
-    // block or character device
-    DeviceData device = 14;
-    // symlink target
-    string symlink = 15;
+    google.protobuf.NullValue fifo = 9;
+    DeviceData character = 10;
+    DirectoryData directory = 11;
+    DeviceData block = 12;
+    RegularData regular = 13;
+    string symlink = 14;
+    google.protobuf.NullValue socket = 15;
   }
-}
-
-// Content of one directory
-message MyDirContent {
-  // relative path of directory to root directory, empty if root
-  string rel_path = 1;
-  // directory content, sorted by ascending `file_name`
-  repeated MyDirEntry entries = 2;
 }
