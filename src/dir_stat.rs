@@ -15,29 +15,34 @@ fn hash(path: &Path) -> anyhow::Result<blake3::Hash> {
 }
 
 pub struct DirStat {
-    path: PathBuf,
+    base: PathBuf,
     receiver: DirWalkReceiver,
     snap: MetadataSnap,
 }
 impl DirStat {
     pub fn spawn(
         task_tracker: &TaskTracker,
-        path: PathBuf,
+        path: &Path,
         receiver: DirWalkReceiver,
     ) -> anyhow::Result<()> {
-        let snap = MetadataSnap::new(&path)?;
+        let snap = MetadataSnap::new(path)?;
         let instance = Self {
-            path,
+            base: path.into(),
             receiver,
             snap,
         };
-        task_tracker.spawn_blocking(|| instance.task())?;
+        task_tracker.spawn(async move { instance.task().await })?;
         Ok(())
     }
 
-    fn task(mut self) -> anyhow::Result<TaskExit> {
-        while let Ok(mut input) = self.receiver.recv() {
-            let rel_path = self.path.join(&input.rel_path);
+    async fn task(mut self) -> anyhow::Result<TaskExit> {
+        while let Ok(mut input) = self.receiver.recv_async().await {
+            log::debug!(
+                "stat[{}]: entering {}",
+                self.base.display(),
+                input.rel_path.display()
+            );
+            let rel_path = self.base.join(&input.rel_path);
             // add hash of files
             for f in &mut input.entries {
                 if let Some(Specific::Regular(file_data)) = &mut f.specific
@@ -60,6 +65,8 @@ impl DirStat {
         self.snap
             .save_to_file(Path::new("/tmp/autoclean/meta_snap.pb.bin.zst"))?;
 
-        Ok(TaskExit::SecondaryTaskKeepRunning)
+        log::debug!("stat[{}]: completed", self.base.display());
+        // TODO: Ok(TaskExit::SecondaryTaskKeepRunning)
+        Ok(TaskExit::MainTaskStopAppSuccess)
     }
 }

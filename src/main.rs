@@ -1,8 +1,13 @@
 //! dir-sync entry point
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 
 use clap::Parser as _;
+
+use crate::dir_stat::DirStat;
+use crate::dir_walk::DirWalk;
+use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
 
 pub mod config;
 mod dir_stat;
@@ -28,6 +33,9 @@ struct Arg {
     /// Profile used to ignore files
     #[arg(short, long)]
     profile: Option<String>,
+    /// Log target: stderr or file location
+    #[arg(short, long)]
+    log: Option<PathBuf>,
     /// Directories to compare
     #[arg(required = true)]
     dirs: Vec<PathBuf>,
@@ -58,15 +66,98 @@ struct Mode {
     remote: bool,
 }
 
-fn main() -> anyhow::Result<std::process::ExitCode> {
-    let arg = Arg::parse();
-    println!("arg={arg:?}");
-    dir_sync_intg()
+impl Arg {
+    /// Get run mode
+    pub fn run_mode(&self) -> RunMode {
+        if let Some(mode) = &self.mode {
+            if mode.status {
+                RunMode::Status
+            } else if mode.output {
+                RunMode::Output
+            } else if mode.sync_batch {
+                RunMode::SyncBatch
+            } else if mode.refresh_metadata_snap {
+                RunMode::RefreshMetadataSnap
+            } else if mode.dump_metadata_snap {
+                RunMode::DumpMetadataSnap
+            } else {
+                RunMode::Remote
+            }
+        } else {
+            RunMode::TerminalUI
+        }
+    }
 }
 
-#[allow(clippy::unnecessary_wraps)]
-fn dir_sync_intg() -> anyhow::Result<std::process::ExitCode> {
-    Ok(std::process::ExitCode::SUCCESS)
+#[derive(PartialEq, Debug)]
+enum RunMode {
+    /// Terminal UI
+    TerminalUI,
+    /// Stop on first difference and exit with failure status (script)
+    Status,
+    /// Output the differences to stdout, one diff per line
+    Output,
+    /// Perform automatic synchronization, ignoring conflicts
+    SyncBatch,
+    /// Refresh the metadata snapshot of a single source
+    RefreshMetadataSnap,
+    /// Dump the metadata snapshot content to stdout
+    DumpMetadataSnap,
+    /// Remote session, spawned by the master session over SSH (not for end user)
+    Remote,
+}
+
+/// Entry point
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    let arg = Arg::parse();
+    let run_mode = arg.run_mode();
+    if run_mode == RunMode::DumpMetadataSnap {
+        todo!();
+    } else {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async move { async_main(arg, run_mode).await })
+    }
+}
+
+/// Async main function
+async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process::ExitCode> {
+    let task_tracker_main = TaskTrackerMain::default();
+    task_tracker_main.setup_signal_catching()?;
+
+    if let Some(log_file) = &arg.log {
+        let mut logger =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"));
+        logger.format_source_path(true).format_target(false);
+        if log_file != Path::new("stderr") {
+            let target = Box::new(File::create(log_file).expect("Can't create log file"));
+            logger.target(env_logger::Target::Pipe(target));
+        }
+        logger.init();
+    }
+
+    match run_mode {
+        RunMode::RefreshMetadataSnap => {
+            let task_tracker = task_tracker_main.tracker();
+            task_tracker_main
+                .spawn(async move { refresh_metadata_snap(task_tracker, arg).await })?;
+        }
+        _ => todo!(),
+    }
+
+    // run until completion or error
+    task_tracker_main.wait().await
+}
+
+#[allow(clippy::unused_async)]
+async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
+    anyhow::ensure!(
+        arg.dirs.len() == 1,
+        "RefreshMetadataSnap mode: expects a single directory"
+    );
+    let dir = std::fs::canonicalize(&arg.dirs[0])?;
+    let dir_receiver = DirWalk::spawn(&task_tracker, &dir, None)?;
+    DirStat::spawn(&task_tracker, &dir, dir_receiver)?;
+    Ok(TaskExit::SecondaryTaskKeepRunning)
 }
 
 #[cfg(test)]

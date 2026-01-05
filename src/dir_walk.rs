@@ -49,6 +49,11 @@ impl DirWalk {
         let mut dir_stack = vec![PathBuf::new()];
 
         while let Some(rel_path) = dir_stack.pop() {
+            log::debug!(
+                "walk[{}]: entering {}",
+                self.base.display(),
+                rel_path.display()
+            );
             let full_path = self.base.join(&rel_path);
             let entries = std::fs::read_dir(&full_path)?
                 // filter ignored entries ASAP
@@ -74,6 +79,7 @@ impl DirWalk {
             }
             self.sender.send(DirContent { rel_path, entries })?;
         }
+        log::debug!("walk[{}]: completed", self.base.display());
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 }
