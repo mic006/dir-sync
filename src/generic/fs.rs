@@ -154,4 +154,14 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_systemd_escape_path() {
+        assert_eq!(systemd_escape_path(""), "-");
+        assert_eq!(
+            systemd_escape_path("/data/path-with-dash"),
+            "data-path\\x2dwith\\x2ddash"
+        );
+        assert_eq!(systemd_escape_path("/.hidden"), "\\x2ehidden");
+    }
 }

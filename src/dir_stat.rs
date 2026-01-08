@@ -6,7 +6,9 @@ use crate::config::ConfigRef;
 use crate::dir_walk::DirWalkReceiver;
 use crate::generic::fs::MessageExt;
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
-use crate::proto::{MetadataSnap, MetadataSnapExt as _, MyDirEntryExt as _, Specific};
+use crate::proto::{
+    MetadataSnap, MetadataSnapExt as _, MyDirEntryExt as _, Specific, get_metadata_snap_path,
+};
 
 /// Hash file, using blake3
 fn hash(path: &Path) -> anyhow::Result<blake3::Hash> {
@@ -30,8 +32,7 @@ impl DirStat {
         receiver: DirWalkReceiver,
     ) -> anyhow::Result<()> {
         let snap = MetadataSnap::new(path)?;
-        let prev_snap =
-            MetadataSnap::load_from_file(MetadataSnap::get_metadata_snap_path(&config, path)).ok();
+        let prev_snap = MetadataSnap::load_from_file(get_metadata_snap_path(&config, path)).ok();
         let instance = Self {
             config,
             base: path.into(),
@@ -62,19 +63,12 @@ impl DirStat {
             }
 
             // add in collection
-            self.snap
-                .root
-                .as_mut()
-                .unwrap()
-                .insert(&input.rel_path, input.entries)?;
+            self.snap.insert(&input.rel_path, input.entries)?;
         }
 
         // TODO: remove
         self.snap
-            .save_to_file(MetadataSnap::get_metadata_snap_path(
-                &self.config,
-                &self.base,
-            ))?;
+            .save_to_file(get_metadata_snap_path(&self.config, &self.base))?;
 
         log::debug!("stat[{}]: completed", self.base.display());
         // TODO: Ok(TaskExit::SecondaryTaskKeepRunning)

@@ -48,6 +48,12 @@ where
     /// Report whether this entry represents a directory
     fn is_dir(&self) -> bool;
 
+    /// Get one entry in the tree
+    fn get_entry(&self, rel_path: &Path) -> Option<&MyDirEntry>;
+
+    /// Get one entry in the tree
+    fn get_entry_mut(&mut self, rel_path: &Path) -> Option<&mut MyDirEntry>;
+
     /// Insert content in the tree
     fn insert(
         &mut self,
@@ -147,25 +153,45 @@ impl MyDirEntryExt for MyDirEntry {
         matches!(self.specific, Some(Specific::Directory(_)))
     }
 
-    fn insert(&mut self, rel_path: &Path, mut entries: Vec<MyDirEntry>) -> anyhow::Result<()> {
-        let mut dir = self;
+    fn get_entry(&self, rel_path: &Path) -> Option<&MyDirEntry> {
+        let mut entry = self;
         for walk in rel_path {
-            let d = walk
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("invalid UTF-8 path '{rel_path:?}"))?;
-            let Some(Specific::Directory(dir_data)) = &mut dir.specific else {
-                anyhow::bail!(
-                    "inconsistent snapshot, trying to insert entries in a non-directory entry"
-                );
+            let d = walk.to_str().unwrap();
+            let Some(Specific::Directory(dir_data)) = &entry.specific else {
+                return None;
             };
             let index = dir_data
                 .content
                 .binary_search_by_key(&d, MyDirEntry::sort_key)
-                .map_err(|_| {
-                    anyhow::anyhow!("inconsistent snapshot, intermediate directory {d} not found")
-                })?;
-            dir = &mut dir_data.content[index];
+                .ok()?;
+            entry = &dir_data.content[index];
         }
+        Some(entry)
+    }
+
+    fn get_entry_mut(&mut self, rel_path: &Path) -> Option<&mut MyDirEntry> {
+        let mut entry = self;
+        for walk in rel_path {
+            let d = walk.to_str().unwrap();
+            let Some(Specific::Directory(dir_data)) = &mut entry.specific else {
+                return None;
+            };
+            let index = dir_data
+                .content
+                .binary_search_by_key(&d, MyDirEntry::sort_key)
+                .ok()?;
+            entry = &mut dir_data.content[index];
+        }
+        Some(entry)
+    }
+
+    fn insert(&mut self, rel_path: &Path, mut entries: Vec<MyDirEntry>) -> anyhow::Result<()> {
+        let dir = self.get_entry_mut(rel_path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "inconsistent snapshot, directory {} not found",
+                rel_path.display()
+            )
+        })?;
 
         entries.sort_by(MyDirEntry::cmp);
 
@@ -191,9 +217,6 @@ where
 {
     /// Create new instance for given root
     fn new(path: &Path) -> anyhow::Result<Self>;
-
-    /// Convert canonical path to snap file name
-    fn get_metadata_snap_path(cfg: &ConfigRef, input_path: &Path) -> PathBuf;
 }
 
 impl MetadataSnapExt for MetadataSnap {
@@ -204,14 +227,29 @@ impl MetadataSnapExt for MetadataSnap {
             root: Some(root),
         })
     }
+}
 
-    fn get_metadata_snap_path(cfg: &ConfigRef, input_path: &Path) -> PathBuf {
-        let mut path = cfg
-            .local_metadata_snap_path_user
-            .join(systemd_escape_path(input_path.checked_as_str().unwrap()));
-        path.set_extension("pb.bin.zst");
-        path
+// Consider MetadataSnap as a MyDirEntry
+impl std::ops::Deref for MetadataSnap {
+    type Target = MyDirEntry;
+
+    fn deref(&self) -> &Self::Target {
+        self.root.as_ref().expect("invalid MetadataSnap, no root")
     }
+}
+impl std::ops::DerefMut for MetadataSnap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.root.as_mut().expect("invalid MetadataSnap, no root")
+    }
+}
+
+/// Convert canonical path to snap file name
+pub fn get_metadata_snap_path(cfg: &ConfigRef, input_path: &Path) -> PathBuf {
+    let mut path = cfg
+        .local_metadata_snap_path_user
+        .join(systemd_escape_path(input_path.checked_as_str().unwrap()));
+    path.set_extension("pb.bin.zst");
+    path
 }
 
 /// Extension to `prost_types::Timestamp`
@@ -233,5 +271,79 @@ impl TimestampExt for Timestamp {
             seconds: d.as_secs() as i64,
             nanos: d.subsec_nanos() as i32,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::config::tests::load_ut_cfg;
+
+    use super::*;
+
+    #[test]
+    fn test_metadata_snap() -> anyhow::Result<()> {
+        // create test dir with some content
+        let test_dir = tempfile::tempdir()?;
+        let test_dir_path = test_dir.path();
+        std::fs::create_dir(test_dir_path.join("sub_folder"))?;
+        std::fs::write(test_dir_path.join("sub_folder/beta"), "")?;
+        std::fs::write(test_dir_path.join("alpha"), "")?;
+        std::os::unix::fs::symlink("target", test_dir_path.join("some_link"))?;
+
+        let root_entries = std::fs::read_dir(test_dir_path)?
+            .flat_map(|e| e.map(MyDirEntry::try_from_std_fs))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        let sub_entries = std::fs::read_dir(test_dir_path.join("sub_folder"))?
+            .flat_map(|e| e.map(MyDirEntry::try_from_std_fs))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        let mut snap = MetadataSnap::new(test_dir_path)?;
+        snap.insert(Path::new(""), root_entries)?;
+        snap.insert(Path::new("sub_folder"), sub_entries)?;
+
+        assert!(snap.get_entry(Path::new("invalid/path")).is_none());
+
+        {
+            let file = snap.get_entry(Path::new("alpha")).unwrap();
+            assert!(file.is_file());
+            assert!(!file.is_dir());
+        }
+
+        {
+            let dir = snap.get_entry(Path::new("sub_folder")).unwrap();
+            assert!(!dir.is_file());
+            assert!(dir.is_dir());
+        }
+
+        {
+            let file_sub_folder = snap.get_entry(Path::new("sub_folder/beta")).unwrap();
+            assert!(file_sub_folder.is_file());
+            assert!(!file_sub_folder.is_dir());
+        }
+
+        {
+            let symlink = snap.get_entry(Path::new("some_link")).unwrap();
+            assert!(!symlink.is_file());
+            assert!(!symlink.is_dir());
+            assert_eq!(
+                symlink.specific,
+                Some(Specific::Symlink(String::from("target")))
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_metadata_snap_path() {
+        let cfg = Arc::new(load_ut_cfg().unwrap());
+        assert_eq!(
+            get_metadata_snap_path(&cfg, Path::new("/data/folder")),
+            cfg.local_metadata_snap_path_user
+                .join("data-folder.pb.bin.zst")
+        );
     }
 }
