@@ -259,12 +259,15 @@ impl TaskTrackerMain {
     /// Task to receive and process signal
     async fn task_signal_catching() -> TrackedTaskResult {
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-            .expect("signal setup failure");
+            .expect("sigint setup failure");
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("signal setup failure");
+            .expect("sigterm setup failure");
+        let mut sigpipe = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::pipe())
+            .expect("sigpipe setup failure");
         let (sig_num, sig_name) = tokio::select! {
             _ = sigint.recv() => (2, "SIGINT"),
             _ = sigterm.recv() => (15, "SIGTERM"),
+            _ = sigpipe.recv() => (13, "SIGPIPE"),
         };
         log::warn!("exiting due to signal {sig_name}");
         Ok(TaskExit::MainTaskStopAppFailure(ExitCode::from(

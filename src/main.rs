@@ -7,13 +7,17 @@ use clap::Parser as _;
 
 use crate::dir_stat::DirStat;
 use crate::dir_walk::DirWalk;
+use crate::generic::fs::MessageExt as _;
+use crate::generic::libc::reset_sigpipe;
 use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
+use crate::proto::MetadataSnap;
 
 pub mod config;
 mod dir_stat;
 mod dir_walk;
 pub mod generic {
     pub mod fs;
+    pub mod libc;
     pub mod path_regex;
     pub mod task_tracker;
     pub mod test;
@@ -109,10 +113,19 @@ enum RunMode {
 
 /// Entry point
 fn main() -> anyhow::Result<std::process::ExitCode> {
+    reset_sigpipe();
+
     let arg = Arg::parse();
     let run_mode = arg.run_mode();
     if run_mode == RunMode::DumpMetadataSnap {
-        todo!();
+        anyhow::ensure!(
+            arg.dirs.len() == 1,
+            "DumpMetadataSnap mode: expects a single file"
+        );
+        let snap_file = &arg.dirs[0];
+        let snap = MetadataSnap::load_from_file(snap_file)?;
+        println!("{snap:#?}");
+        Ok(std::process::ExitCode::SUCCESS)
     } else {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async move { async_main(arg, run_mode).await })
@@ -141,6 +154,7 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
             task_tracker_main
                 .spawn(async move { refresh_metadata_snap(task_tracker, arg).await })?;
         }
+        RunMode::DumpMetadataSnap => unreachable!("handled in main()"),
         _ => todo!(),
     }
 
