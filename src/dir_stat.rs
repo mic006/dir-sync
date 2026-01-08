@@ -51,14 +51,56 @@ impl DirStat {
                 self.base.display(),
                 input.rel_path.display()
             );
-            let rel_path = self.base.join(&input.rel_path);
+            let dir_path = self.base.join(&input.rel_path);
+            let mut prev_snap_dir = self
+                .prev_snap
+                .as_mut()
+                .and_then(|prev_snap| prev_snap.get_entry_mut(&input.rel_path))
+                .filter(|e| e.is_dir());
             // add hash of files
             for f in &mut input.entries {
                 if let Some(Specific::Regular(file_data)) = &mut f.specific
                     && file_data.size != 0
                 {
-                    let path = rel_path.join(&f.file_name);
-                    file_data.hash = hash(&path)?.as_bytes().into();
+                    /* try to get hash from prev_snap_dir
+                     * reuse if
+                     * - same name
+                     * - same mtime
+                     * - same size
+                     */
+                    let prev_entry = prev_snap_dir
+                        .as_mut()
+                        .and_then(|s| s.get_entry_mut(Path::new(&f.file_name)));
+                    let prev_file_hash = prev_entry.and_then(|prev_entry| {
+                        if f.mtime == prev_entry.mtime
+                            && let Some(Specific::Regular(prev_file_data)) =
+                                &mut prev_entry.specific
+                            && file_data.size == prev_file_data.size
+                        {
+                            Some(&mut prev_file_data.hash)
+                        } else {
+                            None
+                        }
+                    });
+
+                    if let Some(prev_file_hash) = prev_file_hash {
+                        // steal hash from prev_snap, will not be reused anyway
+                        log::debug!(
+                            "stat[{}]: reusing hash of {}",
+                            self.base.display(),
+                            input.rel_path.join(&f.file_name).display()
+                        );
+                        file_data.hash = std::mem::take(prev_file_hash);
+                    } else {
+                        // compute hash
+                        log::debug!(
+                            "stat[{}]: compute hash of {}",
+                            self.base.display(),
+                            input.rel_path.join(&f.file_name).display()
+                        );
+                        let path = dir_path.join(&f.file_name);
+                        file_data.hash = hash(&path)?.as_bytes().into();
+                    }
                 }
             }
 
