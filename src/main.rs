@@ -2,9 +2,11 @@
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use clap::Parser as _;
 
+use crate::config::Config;
 use crate::dir_stat::DirStat;
 use crate::dir_walk::DirWalk;
 use crate::generic::fs::MessageExt as _;
@@ -169,8 +171,11 @@ async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTa
         "RefreshMetadataSnap mode: expects a single directory"
     );
     let dir = std::fs::canonicalize(&arg.dirs[0])?;
+
+    let config = Arc::new(Config::from_file(None)?);
+
     let dir_receiver = DirWalk::spawn(&task_tracker, &dir, None)?;
-    DirStat::spawn(&task_tracker, &dir, dir_receiver)?;
+    DirStat::spawn(config, &task_tracker, &dir, dir_receiver)?;
     Ok(TaskExit::SecondaryTaskKeepRunning)
 }
 

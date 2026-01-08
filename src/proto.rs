@@ -8,7 +8,7 @@
 
 use std::cmp::Ordering;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // generated code from proto files
 include!(concat!(env!("OUT_DIR"), "/mod.rs"));
@@ -16,6 +16,9 @@ include!(concat!(env!("OUT_DIR"), "/mod.rs"));
 pub use common::{DeviceData, DirectoryData, MyDirEntry, RegularData, my_dir_entry::Specific};
 pub use persist::MetadataSnap;
 pub use prost_types::Timestamp;
+
+use crate::config::ConfigRef;
+use crate::generic::fs::{PathExt, systemd_escape_path};
 
 /// Null value for google.protobuf.NullValue fields
 pub const PROTO_NULL_VALUE: i32 = 0;
@@ -188,6 +191,9 @@ where
 {
     /// Create new instance for given root
     fn new(path: &Path) -> anyhow::Result<Self>;
+
+    /// Convert canonical path to snap file name
+    fn get_metadata_snap_path(cfg: &ConfigRef, input_path: &Path) -> PathBuf;
 }
 
 impl MetadataSnapExt for MetadataSnap {
@@ -197,6 +203,14 @@ impl MetadataSnapExt for MetadataSnap {
             ts: Some(Timestamp::now()),
             root: Some(root),
         })
+    }
+
+    fn get_metadata_snap_path(cfg: &ConfigRef, input_path: &Path) -> PathBuf {
+        let mut path = cfg
+            .local_metadata_snap_path_user
+            .join(systemd_escape_path(input_path.checked_as_str().unwrap()));
+        path.set_extension("pb.bin.zst");
+        path
     }
 }
 

@@ -69,6 +69,41 @@ impl<M: prost::Message + Default> MessageExt for M {
     }
 }
 
+/// Path escaping, like `systemd-escape --path`.
+/// Code from <https://github.com/lucab/libsystemd-rs/blob/master/src/unit.rs>
+#[must_use]
+pub fn systemd_escape_path(name: &str) -> String {
+    #[must_use]
+    fn systemd_escape_byte(b: u8, index: usize) -> String {
+        let c = char::from(b);
+        match c {
+            '/' => '-'.to_string(),
+            ':' | '_' | '0'..='9' | 'a'..='z' | 'A'..='Z' => c.to_string(),
+            '.' if index > 0 => c.to_string(),
+            _ => format!(r"\x{b:02x}"),
+        }
+    }
+
+    let trimmed = name.trim_matches('/');
+    if trimmed.is_empty() {
+        return "-".to_string();
+    }
+
+    let mut slash_seq = false;
+    let parts: Vec<String> = trimmed
+        .bytes()
+        .filter(|b| {
+            let is_slash = *b == b'/';
+            let res = !(is_slash && slash_seq);
+            slash_seq = is_slash;
+            res
+        })
+        .enumerate()
+        .map(|(n, b)| systemd_escape_byte(b, n))
+        .collect();
+    parts.join("")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::config::ConfigRef;
 use crate::dir_walk::DirWalkReceiver;
 use crate::generic::fs::MessageExt;
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
@@ -15,20 +16,27 @@ fn hash(path: &Path) -> anyhow::Result<blake3::Hash> {
 }
 
 pub struct DirStat {
+    config: ConfigRef,
     base: PathBuf,
     receiver: DirWalkReceiver,
+    prev_snap: Option<MetadataSnap>,
     snap: MetadataSnap,
 }
 impl DirStat {
     pub fn spawn(
+        config: ConfigRef,
         task_tracker: &TaskTracker,
         path: &Path,
         receiver: DirWalkReceiver,
     ) -> anyhow::Result<()> {
         let snap = MetadataSnap::new(path)?;
+        let prev_snap =
+            MetadataSnap::load_from_file(MetadataSnap::get_metadata_snap_path(&config, path)).ok();
         let instance = Self {
+            config,
             base: path.into(),
             receiver,
+            prev_snap,
             snap,
         };
         task_tracker.spawn(async move { instance.task().await })?;
@@ -63,7 +71,10 @@ impl DirStat {
 
         // TODO: remove
         self.snap
-            .save_to_file(Path::new("/tmp/autoclean/meta_snap.pb.bin.zst"))?;
+            .save_to_file(MetadataSnap::get_metadata_snap_path(
+                &self.config,
+                &self.base,
+            ))?;
 
         log::debug!("stat[{}]: completed", self.base.display());
         // TODO: Ok(TaskExit::SecondaryTaskKeepRunning)

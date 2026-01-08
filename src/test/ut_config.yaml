@@ -1,3 +1,17 @@
+# Path to store metadata snapshot of local paths, to speed-up further analysis
+# Data will be stored in a sub-folder named with the dir-sync UID
+# Sub-folders are NOT created by dir-sync, they shall be created manually
+local_metadata_snap_path: /var/local/dir-sync
+
+# Profile configuration, allowing user to select one configuration when launching a dir-sync instance
+# dict: <profile_name>: <profile_settings>
+# profile_settings:
+#   include:      include other profile(s) [opt]
+#   ignore_name:  file/directory names to be ignored, at any level
+#                 "*" represents any number of characters, including leading "."
+#   ignore_path:  relative paths to be ignored
+#                 "*" represents any number of characters excluding "/"
+#   white_list:   relative paths to be considered, even if a parent folder is ignored
 profiles:
   base:
     ignore_name:

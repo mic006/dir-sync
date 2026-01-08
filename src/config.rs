@@ -11,7 +11,7 @@ use crate::generic::fs::PathExt as _;
 use crate::generic::path_regex::PathRegexBuilder;
 
 /// Default configuration path
-pub const DEFAULT_CFG_PATH: &str = "/etc/dir-sync.conf.yaml";
+pub const DEFAULT_CFG_PATH: &str = "/data/develop/github/dir-sync/etc/dir-sync.conf.yaml"; // TODO: "/etc/dir-sync.conf.yaml";
 
 /// Configuration reference, shared between all objects (read-only access)
 pub type ConfigRef = std::sync::Arc<Config>;
@@ -19,6 +19,15 @@ pub type ConfigRef = std::sync::Arc<Config>;
 /// Dir-sync configuration
 #[derive(Deserialize, Debug, PartialEq)]
 pub struct Config {
+    /// Path to store metadata snapshot of local paths, to speed-up further analysis
+    /// Data will be stored in a sub-folder named with the dir-sync UID
+    /// Sub-folders are NOT created by dir-sync, they shall be created manually
+    local_metadata_snap_path: PathBuf,
+    /// Path for current user = `local_metadata_snap_path/$USER`
+    #[serde(skip)]
+    pub local_metadata_snap_path_user: PathBuf,
+
+    /// Profile configuration, allowing user to select one configuration when launching a dir-sync instance
     profiles: BTreeMap<String, Profile>,
 }
 
@@ -33,6 +42,13 @@ impl Config {
         let config_str = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config file at '{}'", path.display()))?;
         Self::from_str(&config_str)
+    }
+
+    /// Finalize configuration
+    fn finalize(&mut self) {
+        self.local_metadata_snap_path_user = self
+            .local_metadata_snap_path
+            .join(std::env::var("USER").unwrap_or_else(|_| String::from("nobody")));
     }
 
     /// Get file matcher for the wanted profile
@@ -73,7 +89,9 @@ impl FromStr for Config {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(serde_yaml::from_str(s)?)
+        let mut instance = serde_yaml::from_str::<Self>(s)?;
+        instance.finalize();
+        Ok(instance)
     }
 }
 
@@ -163,6 +181,9 @@ pub mod tests {
     fn load_cfg() {
         let cfg = load_ut_cfg().unwrap();
         let expected_cfg = Config {
+            local_metadata_snap_path: PathBuf::from("/var/local/dir-sync"),
+            local_metadata_snap_path_user: PathBuf::from("/var/local/dir-sync")
+                .join(std::env::var("USER").unwrap()),
             profiles: BTreeMap::from([
                 (
                     String::from("base"),
