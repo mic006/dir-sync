@@ -93,6 +93,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_dir_walk() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+
         // create test dir with some content
         let test_dir = tempfile::tempdir()?;
         let test_dir_path = test_dir.path();
