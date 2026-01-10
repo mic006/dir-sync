@@ -5,16 +5,24 @@
 ```mermaid
 classDiagram
 namespace proto {
-    class DirEntry {
+    class MyDirEntry {
         Directory entry information, =metadata
         --
         file_name
-        mode
+        permissions
         uid
         gid
         mtime
-        file_type
+        specific - file_type and data
     }
+    class MetadataSnap {
+        Snapshot of metadata of one folder
+        --
+        ts
+        root
+    }
+}
+namespace data {
     class DirContent {
         Content of one directory
         --
@@ -27,20 +35,28 @@ namespace dir_sync {
         Dedicated thread walking a directory
         Output the content of each directory:
         - start from root
-        - then sub-directories of the current dir, in ascending file_name
+        - then sub-directories of the current dir
         - discard filtered entries ASAP (avoid entering the directories)
         --
         Input: `PathBuf`
-        Output: stream of `proto::DirContent` without hash
+        Output: stream of `DirContent` without hash
     }
     class DirStat {
         Add Hash for all regular files:
         - from a previous scan if available
         - otherwise compute hash
         --
-        Input: stream of `proto::DirContent` without hash + old snap
-        Output: stream of `proto::DirContent` with hash
+        Input: stream of `DirContent` without hash + old MetadataSnap
+        Output: MetadataSnap
     }
+    class DirSnap {
+        Determine the MetadataSnap of one path
+        --
+        Input: `PathBuf` + old MetadataSnap
+        Output: MetadataSnap
+    }
+
+
     class DirRemote {
         Wrap SSH instance of dir-sync
         Generate a stream of `proto::DirContent` with hash        
@@ -86,7 +102,18 @@ namespace dir_sync {
         Input: stream of delta with action
     }
 }
+
+DirSnap *-- DirWalk
+DirSnap *-- DirStat
 ```
+
+## Design
+
+trait Dir -> fournit l'interface attendue pour lire et modifier le fs
+struct DirLocal -> travaille sur un répertoire local
+struct DirRemote -> encapsule la session SSH, fait les conversions de message
+
+le remote pilote un DirLocal pour faire le job local
 
 ## Pipeline
 

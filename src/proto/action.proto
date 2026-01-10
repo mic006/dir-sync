@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package action;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+import "common.proto";
+
+// Data for a regular file
+message FileData {
+  // offset of data in file
+  uint64 offset = 1;
+  // buffer of data
+  bytes data = 2;
+  oneof segment {
+    string file_name = 3;
+    common.MyDirEntry entry = 4;
+
+  }
+}
+
+// Action on the filesystem
+message Action {
+  // relative path of file
+  string rel_path = 1;
+  // type of file, along with type specific data
+  oneof specific {
+    google.protobuf.NullValue delete = 2;
+    common.MyDirEntry update_metadata = 3;
+    FileData file = 4;
+    read = 5;
+  }
+}

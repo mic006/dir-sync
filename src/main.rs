@@ -15,6 +15,8 @@ use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, Track
 use crate::proto::MetadataSnap;
 
 pub mod config;
+mod dir;
+mod dir_snap;
 mod dir_stat;
 mod dir_walk;
 pub mod generic {
