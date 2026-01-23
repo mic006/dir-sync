@@ -2,19 +2,22 @@
 
 #![allow(unsafe_code)]
 
-use std::{ffi::CString, marker::PhantomData, os::fd::RawFd};
+use std::ffi::CString;
+use std::os::fd::RawFd;
 
 use prost_types::Timestamp;
 
-use super::api::{DirRoot, MyFile};
-
-pub struct DirRootImpl<F: MyFile> {
+/// Directory tree operations
+pub struct FsTree {
     fd: RawFd,
-    _phantom: PhantomData<F>,
 }
 
-impl<F: MyFile> DirRoot<F> for DirRootImpl<F> {
-    fn new(path: &str) -> anyhow::Result<Self> {
+impl FsTree {
+    /// Create new instance, by opening root directory of a tree
+    ///
+    /// # Errors
+    /// - Returns error if the path cannot be opened
+    pub fn new(path: &str) -> anyhow::Result<Self> {
         unsafe {
             let c_path = CString::new(path)?;
             let fd = libc::open(
@@ -23,17 +26,18 @@ impl<F: MyFile> DirRoot<F> for DirRootImpl<F> {
             );
             anyhow::ensure!(
                 fd >= 0,
-                "DirRootImpl::open({path}) failed: {}",
+                "FsTree::new({path}) failed: {}",
                 std::io::Error::last_os_error()
             );
-            Ok(Self {
-                fd,
-                _phantom: PhantomData,
-            })
+            Ok(Self { fd })
         }
     }
 
-    fn open(&self, rel_path: &str) -> anyhow::Result<F> {
+    /// Open file for read access (`openat`)
+    ///
+    /// # Errors
+    /// - Returns error if the file cannot be opened
+    pub fn open(&self, rel_path: &str) -> anyhow::Result<FsFile> {
         unsafe {
             let c_rel_path = CString::new(rel_path)?;
             let fd = libc::openat(
@@ -43,14 +47,18 @@ impl<F: MyFile> DirRoot<F> for DirRootImpl<F> {
             );
             anyhow::ensure!(
                 fd >= 0,
-                "DirRootImpl::open({rel_path}) failed: {}",
+                "FsTree::open({rel_path}) failed: {}",
                 std::io::Error::last_os_error()
             );
-            Ok(F::new(fd))
+            Ok(FsFile::new(fd))
         }
     }
 
-    fn mkdir(&self, rel_path: &str) -> anyhow::Result<()> {
+    /// Create directory (`mkdirat`)
+    ///
+    /// # Errors
+    /// - Returns error if the directory cannot be created
+    pub fn mkdir(&self, rel_path: &str) -> anyhow::Result<()> {
         unsafe {
             let c_rel_path = CString::new(rel_path)?;
             let res = libc::mkdirat(
@@ -60,14 +68,26 @@ impl<F: MyFile> DirRoot<F> for DirRootImpl<F> {
             );
             anyhow::ensure!(
                 res == 0,
-                "DirRootImpl::mkdir({rel_path}) failed: {}",
+                "FsTree::mkdir({rel_path}) failed: {}",
                 std::io::Error::last_os_error()
             );
             Ok(())
         }
     }
 
-    fn create_tmp(&self, rel_parent: &str, size: u64) -> anyhow::Result<F> {
+    /// Create temporary file (`openat(O_TMPFILE)`)
+    ///
+    /// Process to create a file:
+    /// - `let f = d.create_tmp()`
+    /// - `f.write()`
+    /// - `f.chown()`
+    /// - `f.chmod()`
+    /// - `f.set_mtime()`
+    /// - `d.commit_tmp(f)` to create the file entry in the directory
+    ///
+    /// # Errors
+    /// - Returns error if the temporary file cannot be created
+    pub fn create_tmp(&self, rel_parent: &str, size: u64) -> anyhow::Result<FsFile> {
         unsafe {
             let c_rel_parent = CString::new(rel_parent)?;
             // create temp file
@@ -79,7 +99,7 @@ impl<F: MyFile> DirRoot<F> for DirRootImpl<F> {
             );
             anyhow::ensure!(
                 fd >= 0,
-                "DirRootImpl::create_tmp({rel_parent}) creation failed: {}",
+                "FsTree::create_tmp({rel_parent}) creation failed: {}",
                 std::io::Error::last_os_error()
             );
 
@@ -87,15 +107,19 @@ impl<F: MyFile> DirRoot<F> for DirRootImpl<F> {
             let res = libc::fallocate(fd, 0, 0, size.cast_signed());
             anyhow::ensure!(
                 res == 0,
-                "DirRootImpl::create_tmp({rel_parent}) allocation failed: {}",
+                "FsTree::create_tmp({rel_parent}) allocation failed: {}",
                 std::io::Error::last_os_error()
             );
 
-            Ok(F::new(fd))
+            Ok(FsFile::new(fd))
         }
     }
 
-    fn commit_tmp(&self, rel_path: &str, mut f: F) -> anyhow::Result<()> {
+    /// Commit temporary file (`linkat`)
+    ///
+    /// # Errors
+    /// - Returns error if the file cannot be committed
+    pub fn commit_tmp(&self, rel_path: &str, mut f: FsFile) -> anyhow::Result<()> {
         unsafe {
             let c_rel_path = CString::new(rel_path)?;
             let res = libc::linkat(
@@ -107,7 +131,7 @@ impl<F: MyFile> DirRoot<F> for DirRootImpl<F> {
             );
             anyhow::ensure!(
                 res == 0,
-                "DirRootImpl::commit_tmp({rel_path}) failed: {}",
+                "FsTree::commit_tmp({rel_path}) failed: {}",
                 std::io::Error::last_os_error()
             );
             f.close()?;
@@ -115,47 +139,63 @@ impl<F: MyFile> DirRoot<F> for DirRootImpl<F> {
         }
     }
 
-    fn symlink(&self, rel_path: &str, target: &str) -> anyhow::Result<()> {
+    /// Create a symbolic link (`symlinkat`)
+    ///
+    /// # Errors
+    /// - Returns error if the symlink cannot be created
+    pub fn symlink(&self, rel_path: &str, target: &str) -> anyhow::Result<()> {
         unsafe {
             let c_rel_path = CString::new(rel_path)?;
             let c_target = CString::new(target)?;
             let res = libc::symlinkat(c_target.as_ptr(), self.fd, c_rel_path.as_ptr());
             anyhow::ensure!(
                 res == 0,
-                "DirRootImpl::symlink({rel_path}) failed: {}",
+                "FsTree::symlink({rel_path}) failed: {}",
                 std::io::Error::last_os_error()
             );
             Ok(())
         }
     }
 
-    fn remove_file(&self, rel_path: &str) -> anyhow::Result<()> {
+    /// Delete a file or socket relative to an opened directory (`unlinkat`)
+    ///
+    /// # Errors
+    /// - Returns error if the file cannot be removed
+    pub fn remove_file(&self, rel_path: &str) -> anyhow::Result<()> {
         unsafe {
             let c_rel_path = CString::new(rel_path)?;
             let res = libc::unlinkat(self.fd, c_rel_path.as_ptr(), 0);
             anyhow::ensure!(
                 res == 0,
-                "DirRootImpl::remove_file({rel_path}) failed: {}",
+                "FsTree::remove_file({rel_path}) failed: {}",
                 std::io::Error::last_os_error()
             );
             Ok(())
         }
     }
 
-    fn remove_dir(&self, rel_path: &str) -> anyhow::Result<()> {
+    /// Delete an empty directory or socket relative to an opened directory (`unlinkat`)
+    ///
+    /// # Errors
+    /// - Returns error if the directory cannot be removed
+    pub fn remove_dir(&self, rel_path: &str) -> anyhow::Result<()> {
         unsafe {
             let c_rel_path = CString::new(rel_path)?;
             let res = libc::unlinkat(self.fd, c_rel_path.as_ptr(), libc::AT_REMOVEDIR);
             anyhow::ensure!(
                 res == 0,
-                "DirRootImpl::remove_dir({rel_path}) failed: {}",
+                "FsTree::remove_dir({rel_path}) failed: {}",
                 std::io::Error::last_os_error()
             );
             Ok(())
         }
     }
 
-    fn rename(&self, rel_oldpath: &str, rel_newpath: &str) -> anyhow::Result<()> {
+    /// Rename a file (`renameat`)
+    ///
+    /// # Errors
+    /// - Returns error if the file cannot be renamed
+    pub fn rename(&self, rel_oldpath: &str, rel_newpath: &str) -> anyhow::Result<()> {
         unsafe {
             let c_rel_oldpath = CString::new(rel_oldpath)?;
             let c_rel_newpath = CString::new(rel_newpath)?;
@@ -167,7 +207,7 @@ impl<F: MyFile> DirRoot<F> for DirRootImpl<F> {
             );
             anyhow::ensure!(
                 res == 0,
-                "DirRootImpl::rename({rel_oldpath}, {rel_newpath}) failed: {}",
+                "FsTree::rename({rel_oldpath}, {rel_newpath}) failed: {}",
                 std::io::Error::last_os_error()
             );
             // TODO: fsync of rel_newpath parent dir
@@ -175,19 +215,22 @@ impl<F: MyFile> DirRoot<F> for DirRootImpl<F> {
         }
     }
 
-    fn close(&mut self) -> anyhow::Result<()> {
-        DirRootImpl::close(self)
+    /// Close file
+    ///
+    /// # Errors
+    /// - Returns error if the directory cannot be closed
+    pub fn close(&mut self) -> anyhow::Result<()> {
+        self.close_internal()
     }
-}
-impl<F: MyFile> DirRootImpl<F> {
-    fn close(&mut self) -> anyhow::Result<()> {
+
+    fn close_internal(&mut self) -> anyhow::Result<()> {
         unsafe {
             if self.fd >= 0 {
                 let res = libc::close(self.fd);
                 self.fd = -1;
                 anyhow::ensure!(
                     res == 0,
-                    "DirRootImpl::close() failed: {}",
+                    "FsTree::close() failed: {}",
                     std::io::Error::last_os_error()
                 );
             }
@@ -195,51 +238,68 @@ impl<F: MyFile> DirRootImpl<F> {
         }
     }
 }
-impl<F: MyFile> Drop for DirRootImpl<F> {
+
+impl Drop for FsTree {
     fn drop(&mut self) {
-        drop(self.close());
+        drop(self.close_internal());
     }
 }
 
-/// File handling adapted to `dir-sync` needs
-pub struct MyFileImpl {
+/// File descriptor wrapper
+pub struct FsFile {
     fd: RawFd,
 }
 
-impl MyFile for MyFileImpl {
-    fn new(fd: RawFd) -> Self {
+impl FsFile {
+    /// Create a new file wrapper
+    #[must_use]
+    pub fn new(fd: RawFd) -> Self {
         Self { fd }
     }
 
-    fn fd(&self) -> RawFd {
+    /// Get the underlying file descriptor
+    #[must_use]
+    pub fn fd(&self) -> RawFd {
         self.fd
     }
 
-    fn chown(&self, owner: u32, group: u32) -> anyhow::Result<()> {
+    /// Change owner of the file (`fchown`)
+    ///
+    /// # Errors
+    /// - Returns error if the ownership cannot be changed
+    pub fn chown(&self, owner: u32, group: u32) -> anyhow::Result<()> {
         unsafe {
             let res = libc::fchown(self.fd, owner, group);
             anyhow::ensure!(
                 res == 0,
-                "MyFileImpl::chown() failed: {}",
+                "FsFile::chown() failed: {}",
                 std::io::Error::last_os_error()
             );
             Ok(())
         }
     }
 
-    fn chmod(&self, permissions: u32) -> anyhow::Result<()> {
+    /// Change mode of the file (`fchmod`)
+    ///
+    /// # Errors
+    /// - Returns error if the mode cannot be changed
+    pub fn chmod(&self, permissions: u32) -> anyhow::Result<()> {
         unsafe {
             let res = libc::fchmod(self.fd, permissions);
             anyhow::ensure!(
                 res == 0,
-                "MyFileImpl::chmod() failed: {}",
+                "FsFile::chmod() failed: {}",
                 std::io::Error::last_os_error()
             );
             Ok(())
         }
     }
 
-    fn set_mtime(&self, ts: &Timestamp) -> anyhow::Result<()> {
+    /// Set modification time (`futimens`)
+    ///
+    /// # Errors
+    /// - Returns error if the time cannot be set
+    pub fn set_mtime(&self, ts: &Timestamp) -> anyhow::Result<()> {
         unsafe {
             let times = [
                 libc::timespec {
@@ -256,14 +316,18 @@ impl MyFile for MyFileImpl {
             let res = libc::futimens(self.fd, times.as_ptr());
             anyhow::ensure!(
                 res == 0,
-                "MyFileImpl::set_mtime() failed: {}",
+                "FsFile::set_mtime() failed: {}",
                 std::io::Error::last_os_error()
             );
             Ok(())
         }
     }
 
-    fn write(&self, data: &[u8]) -> anyhow::Result<()> {
+    /// Write data to the file (`write`)
+    ///
+    /// # Errors
+    /// - Returns error if the data cannot be written
+    pub fn write(&self, data: &[u8]) -> anyhow::Result<()> {
         unsafe {
             let mut written = 0;
             while written < data.len() {
@@ -274,7 +338,7 @@ impl MyFile for MyFileImpl {
                 );
                 anyhow::ensure!(
                     res >= 0,
-                    "MyFileImpl::write() failed: {}",
+                    "FsFile::write() failed: {}",
                     std::io::Error::last_os_error()
                 );
                 written += res.cast_unsigned();
@@ -283,12 +347,16 @@ impl MyFile for MyFileImpl {
         }
     }
 
-    fn read(&self, data: &mut [u8]) -> anyhow::Result<u64> {
+    /// Read data from the file (`read`)
+    ///
+    /// # Errors
+    /// - Returns error if the data cannot be read
+    pub fn read(&self, data: &mut [u8]) -> anyhow::Result<u64> {
         unsafe {
             let res = libc::read(self.fd, data.as_mut_ptr().cast(), data.len());
             anyhow::ensure!(
                 res >= 0,
-                "MyFileImpl::read() failed: {}",
+                "FsFile::read() failed: {}",
                 std::io::Error::last_os_error()
             );
             #[allow(clippy::cast_sign_loss)]
@@ -296,7 +364,11 @@ impl MyFile for MyFileImpl {
         }
     }
 
-    fn close(&mut self) -> anyhow::Result<()> {
+    /// Close the file (`close`)
+    ///
+    /// # Errors
+    /// - Returns error if the file cannot be closed
+    pub fn close(&mut self) -> anyhow::Result<()> {
         unsafe {
             if self.fd >= 0 {
                 let res = libc::fsync(self.fd);
@@ -317,7 +389,8 @@ impl MyFile for MyFileImpl {
         }
     }
 }
-impl Drop for MyFileImpl {
+
+impl Drop for FsFile {
     fn drop(&mut self) {
         drop(self.close());
     }
@@ -332,22 +405,21 @@ mod tests {
     #[test]
     fn test_dir_root_impl_new() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = DirRootImpl::<MyFileImpl>::new(temp_dir.path().to_str().unwrap())?;
+        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
         assert!(dir_root.fd >= 0);
         Ok(())
     }
 
     #[test]
     fn test_dir_root_impl_new_invalid_path() {
-        let result: anyhow::Result<DirRootImpl<MyFileImpl>> =
-            DirRootImpl::new("/nonexistent/path/to/directory");
+        let result: anyhow::Result<FsTree> = FsTree::new("/nonexistent/path/to/directory");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_my_file_impl_write_and_read() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = DirRootImpl::<MyFileImpl>::new(temp_dir.path().to_str().unwrap())?;
+        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a temporary file
         let tmp_file = dir_root.create_tmp(".", 4096)?;
@@ -371,7 +443,7 @@ mod tests {
     #[test]
     fn test_my_file_impl_chmod() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = DirRootImpl::<MyFileImpl>::new(temp_dir.path().to_str().unwrap())?;
+        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create and commit a file
         let tmp_file = dir_root.create_tmp(".", 1024)?;
@@ -392,7 +464,7 @@ mod tests {
     #[test]
     fn test_dir_root_impl_symlink() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = DirRootImpl::<MyFileImpl>::new(temp_dir.path().to_str().unwrap())?;
+        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a symlink to the target file
         dir_root.symlink("link_to_target.txt", "target_file.txt")?;
@@ -408,7 +480,7 @@ mod tests {
     #[test]
     fn test_dir_root_impl_remove_file() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = DirRootImpl::<MyFileImpl>::new(temp_dir.path().to_str().unwrap())?;
+        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a file
         let tmp_file = dir_root.create_tmp(".", 1024)?;
@@ -429,7 +501,7 @@ mod tests {
     #[test]
     fn test_dir_root_impl_remove_dir() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = DirRootImpl::<MyFileImpl>::new(temp_dir.path().to_str().unwrap())?;
+        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a directory
         let subdir_path = temp_dir.path().join("subdir");
@@ -450,7 +522,7 @@ mod tests {
     #[test]
     fn test_dir_root_impl_rename() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = DirRootImpl::<MyFileImpl>::new(temp_dir.path().to_str().unwrap())?;
+        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a file
         let tmp_file = dir_root.create_tmp(".", 1024)?;
@@ -472,7 +544,7 @@ mod tests {
     #[test]
     fn test_my_file_impl_multiple_writes() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = DirRootImpl::<MyFileImpl>::new(temp_dir.path().to_str().unwrap())?;
+        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a temporary file
         let tmp_file = dir_root.create_tmp(".", 4096)?;
@@ -503,7 +575,7 @@ mod tests {
     #[test]
     fn test_my_file_impl_set_mtime() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = DirRootImpl::<MyFileImpl>::new(temp_dir.path().to_str().unwrap())?;
+        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a temporary file
         let tmp_file = dir_root.create_tmp(".", 1024)?;

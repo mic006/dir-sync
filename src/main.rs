@@ -18,10 +18,7 @@ pub mod config;
 mod dir_stat;
 mod dir_walk;
 pub mod generic {
-    pub mod file {
-        pub mod api;
-        pub mod implement;
-    }
+    pub mod file;
     pub mod fs;
     pub mod libc;
     pub mod path_regex;
