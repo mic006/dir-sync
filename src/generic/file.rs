@@ -191,6 +191,85 @@ impl FsTree {
         }
     }
 
+    /// Change owner of the file (`fchownat`)
+    ///
+    /// # Errors
+    /// - Returns error if the ownership cannot be changed
+    pub fn chown(&self, rel_path: &str, owner: u32, group: u32) -> anyhow::Result<()> {
+        unsafe {
+            let c_rel_path = CString::new(rel_path)?;
+            let res = libc::fchownat(
+                self.fd,
+                c_rel_path.as_ptr(),
+                owner,
+                group,
+                libc::AT_SYMLINK_NOFOLLOW,
+            );
+            anyhow::ensure!(
+                res == 0,
+                "FsTree::chown() failed: {}",
+                std::io::Error::last_os_error()
+            );
+            Ok(())
+        }
+    }
+
+    /// Change mode of the file (`fchmodat`)
+    ///
+    /// # Errors
+    /// - Returns error if the mode cannot be changed
+    pub fn chmod(&self, rel_path: &str, permissions: u32) -> anyhow::Result<()> {
+        unsafe {
+            let c_rel_path = CString::new(rel_path)?;
+            let res = libc::fchmodat(
+                self.fd,
+                c_rel_path.as_ptr(),
+                permissions,
+                libc::AT_SYMLINK_NOFOLLOW,
+            );
+            anyhow::ensure!(
+                res == 0,
+                "FsTree::chmod() failed: {}",
+                std::io::Error::last_os_error()
+            );
+            Ok(())
+        }
+    }
+
+    /// Set modification time (`utimensat`)
+    ///
+    /// # Errors
+    /// - Returns error if the time cannot be set
+    pub fn set_mtime(&self, rel_path: &str, ts: &Timestamp) -> anyhow::Result<()> {
+        unsafe {
+            let times = [
+                libc::timespec {
+                    // atime
+                    tv_sec: 0,
+                    tv_nsec: libc::UTIME_OMIT,
+                },
+                libc::timespec {
+                    // mtime
+                    tv_sec: ts.seconds,
+                    tv_nsec: ts.nanos.into(),
+                },
+            ];
+            let c_rel_path = CString::new(rel_path)?;
+            let res = libc::utimensat(
+                self.fd,
+                c_rel_path.as_ptr(),
+                times.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            );
+            anyhow::ensure!(
+                res == 0,
+                "FsTree::set_mtime() failed: {}",
+                std::io::Error::last_os_error()
+            );
+            Ok(())
+        }
+    }
+
     /// Rename a file (`renameat`)
     ///
     /// # Errors
@@ -220,10 +299,6 @@ impl FsTree {
     /// # Errors
     /// - Returns error if the directory cannot be closed
     pub fn close(&mut self) -> anyhow::Result<()> {
-        self.close_internal()
-    }
-
-    fn close_internal(&mut self) -> anyhow::Result<()> {
         unsafe {
             if self.fd >= 0 {
                 let res = libc::close(self.fd);
@@ -241,7 +316,7 @@ impl FsTree {
 
 impl Drop for FsTree {
     fn drop(&mut self) {
-        drop(self.close_internal());
+        drop(self.close());
     }
 }
 
@@ -391,7 +466,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_fs_tree_impl_new() -> anyhow::Result<()> {
+    fn test_fs_tree_new() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
         assert!(fs_tree.fd >= 0);
@@ -399,13 +474,13 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_tree_impl_new_invalid_path() {
+    fn test_fs_tree_new_invalid_path() {
         let result: anyhow::Result<FsTree> = FsTree::new("/nonexistent/path/to/directory");
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_fs_file_impl_write_and_read() -> anyhow::Result<()> {
+    fn test_fs_file_write_and_read() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
@@ -429,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_file_impl_chmod() -> anyhow::Result<()> {
+    fn test_fs_file_chmod() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
@@ -450,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_tree_impl_symlink() -> anyhow::Result<()> {
+    fn test_fs_tree_symlink() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
@@ -466,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_tree_impl_remove_file() -> anyhow::Result<()> {
+    fn test_fs_tree_remove_file() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
@@ -487,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_tree_impl_mkdir_remove_dir() -> anyhow::Result<()> {
+    fn test_fs_tree_mkdir_remove_dir() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
@@ -508,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_tree_impl_rename() -> anyhow::Result<()> {
+    fn test_fs_tree_rename() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
@@ -530,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_file_impl_multiple_writes() -> anyhow::Result<()> {
+    fn test_fs_file_multiple_writes() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
@@ -561,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_file_impl_set_mtime() -> anyhow::Result<()> {
+    fn test_fs_file_set_mtime() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
@@ -588,6 +663,203 @@ mod tests {
                 .unwrap_or_default();
             assert_eq!(duration.as_secs().cast_signed(), ts.seconds);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_tree_open() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a file first using create_tmp and commit_tmp
+        let tmp_file = fs_tree.create_tmp(".", 256)?;
+        let data = b"Test content for open";
+        tmp_file.write(data)?;
+        fs_tree.commit_tmp("test_open.txt", tmp_file)?;
+
+        // Now open the file for reading
+        let mut f = fs_tree.open("test_open.txt")?;
+        assert!(f.fd >= 0);
+
+        // Read and verify content
+        let mut buffer = [0u8; 256];
+        let bytes_read = f.read(&mut buffer)?;
+        assert_eq!(&buffer[..data.len()], data);
+        assert!(bytes_read > 0);
+
+        f.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_tree_open_nonexistent() {
+        let temp_dir = TempDir::new().unwrap();
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap()).unwrap();
+
+        // Try to open a file that doesn't exist
+        let result = fs_tree.open("nonexistent.txt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fs_tree_chown() -> anyhow::Result<()> {
+        // Note: This test may require elevated privileges to actually change ownership
+        // For testing purposes, we'll just verify that the API works without errors
+        // when we set to the current user/group
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a file
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
+        fs_tree.commit_tmp("chown_test.txt", tmp_file)?;
+
+        // Get current user and group IDs
+        unsafe {
+            let uid = libc::getuid();
+            let gid = libc::getgid();
+
+            // Change ownership to current user/group (should always succeed)
+            fs_tree.chown("chown_test.txt", uid, gid)?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_tree_chmod() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a file
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
+        fs_tree.commit_tmp("chmod_tree_test.txt", tmp_file)?;
+
+        // Change permissions using FsTree::chmod
+        fs_tree.chmod("chmod_tree_test.txt", 0o640)?;
+
+        // Verify permissions
+        let metadata = fs::metadata(temp_dir.path().join("chmod_tree_test.txt"))?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = metadata.permissions().mode();
+            assert_eq!(mode & 0o777, 0o640);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_tree_set_mtime_dir() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a directory
+        fs_tree.mkdir("test_dir_mtime")?;
+
+        // Set modification time on directory
+        let ts = Timestamp {
+            seconds: 1_609_459_200, // 2021-01-01 00:00:00 UTC
+            nanos: 0,
+        };
+        fs_tree.set_mtime("test_dir_mtime", &ts)?;
+
+        // Verify modification time
+        let metadata = fs::metadata(temp_dir.path().join("test_dir_mtime"))?;
+        let mtime = metadata.modified()?;
+
+        {
+            use std::time::SystemTime;
+            let duration = mtime
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default();
+            assert_eq!(duration.as_secs().cast_signed(), ts.seconds);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_file_chown() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a temporary file
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
+
+        // Get current user and group IDs
+        unsafe {
+            let uid = libc::getuid();
+            let gid = libc::getgid();
+
+            // Change ownership using FsFile::chown
+            tmp_file.chown(uid, gid)?;
+        }
+
+        fs_tree.commit_tmp("file_chown_test.txt", tmp_file)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_file_read() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a file with known content
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
+        let test_data = b"Hello, this is test data for reading!";
+        tmp_file.write(test_data)?;
+        fs_tree.commit_tmp("read_test.txt", tmp_file)?;
+
+        // Open and read the file
+        let mut f = fs_tree.open("read_test.txt")?;
+        let mut buffer = [0u8; 256];
+        let bytes_read = f.read(&mut buffer)?;
+
+        // Verify the read data
+        assert!(bytes_read > 0);
+        assert_eq!(&buffer[..test_data.len()], test_data);
+
+        f.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_file_close() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create and commit a file
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
+        tmp_file.write(b"Test data")?;
+        fs_tree.commit_tmp("close_test.txt", tmp_file)?;
+
+        // Open the file
+        let mut f = fs_tree.open("close_test.txt")?;
+        let initial_fd = f.fd;
+        assert!(initial_fd >= 0);
+
+        // Close the file
+        f.close()?;
+
+        // Verify fd is invalidated
+        assert_eq!(f.fd, -1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_tree_close() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let mut fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+        let initial_fd = fs_tree.fd;
+        assert!(initial_fd >= 0);
+
+        // Close the tree
+        fs_tree.close()?;
+
+        // Verify fd is invalidated
+        assert_eq!(fs_tree.fd, -1);
 
         Ok(())
     }
