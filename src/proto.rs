@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 // generated code from proto files
 include!(concat!(env!("OUT_DIR"), "/mod.rs"));
 
+pub use action::{action_req::Req as ActionReq, action_rsp::Rsp as ActionRsp};
 pub use common::{DeviceData, DirectoryData, MyDirEntry, RegularData, my_dir_entry::Specific};
 pub use persist::MetadataSnap;
 pub use prost_types::Timestamp;

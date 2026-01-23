@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package action;
+
+import "google/protobuf/struct.proto";
+
+import "common.proto";
+
+// Delete one entry (all types)
+message DeleteEntryReq {
+  // relative path of file
+  string rel_path = 1;
+}
+
+/* Create or update metadata of one entry
+ * 
+ * Create:
+ * - empty file
+ * - directory
+ * - symlink
+ * Update metadata (permissions, ownership, mtime): any kind
+ * Update symlink target
+ */
+message UpdateMetadataReq {
+  // relative path of file
+  string rel_path = 1;
+  // metadata to apply
+  common.MyDirEntry metadata = 2;
+}
+
+/* Create or update one file, metadata + content
+ * For one file, there can be a single request or segmented requests
+ * - first segment contains file size & offset = 0
+ * - last segment contains metadata, including file size and data checksum
+ */
+message FileWriteReq {
+  // relative path of file
+  string rel_path = 1;
+  // offset of data in file
+  uint64 offset = 2;
+  // data segment
+  bytes data = 3;
+  // [first segment] file size (to pre-allocate the file)
+  optional uint64 size = 4;
+  // [last segment] metadata to apply
+  optional common.MyDirEntry metadata = 5;
+}
+
+// Read one remote file
+message FileReadReq {
+  // relative path of file
+  string rel_path = 1;
+}
+
+// Request FS action to remote
+message ActionReq {
+  oneof req {
+    // indicate end of a stream of requests
+    google.protobuf.NullValue end_marker = 1;
+    // delete file / symlink
+    DeleteEntryReq delete_file = 2;
+    // delete empty directory
+    DeleteEntryReq delete_dir = 3;
+    UpdateMetadataReq create_update_metadata = 4;
+    FileWriteReq create_update_file = 5;
+    FileReadReq read_file = 6;
+  }
+}
+
+// Report error when handling a request
+message ErrorRsp {
+  // relative path of file
+  string rel_path = 1;
+  // error message
+  string message = 2;
+}
+
+// Data of one remote file
+message FileReadRsp {
+  // relative path of file
+  string rel_path = 1;
+  // offset of data in file
+  uint64 offset = 2;
+  // data segment
+  bytes data = 3;
+}
+
+// FS response from remote
+message ActionRsp {
+  oneof rsp {
+    // indicate end of a stream of responses, matching the end_marker Request
+    google.protobuf.NullValue end_marker = 1;
+    ErrorRsp error = 2;
+    FileReadRsp file_data = 3;
+  }
+}

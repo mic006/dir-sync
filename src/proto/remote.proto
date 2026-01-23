@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package remote;
+
+import "google/protobuf/struct.proto";
+
+import "action.proto";
+import "common.proto";
+
+// Request to remote
+message Request {
+  oneof req {
+    // configuration + path for tree analysis
+    google.protobuf.NullValue config = 1;
+    // filesystem action request
+    action.ActionReq action_req = 2;
+  }
+}
+
+// Response from remote
+message Response {
+  oneof rsp {
+    // metadata of the whole tree
+    common.MyDirEntry tree_metadata = 1;
+    // filesystem action response
+    action.ActionRsp action_rsp = 2;
+  }
+}

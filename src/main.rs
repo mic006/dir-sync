@@ -26,6 +26,7 @@ pub mod generic {
     pub mod test;
 }
 pub mod proto;
+pub mod tree;
 
 /// Dir-sync
 ///
