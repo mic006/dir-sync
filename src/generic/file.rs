@@ -50,7 +50,7 @@ impl FsTree {
                 "FsTree::open({rel_path}) failed: {}",
                 std::io::Error::last_os_error()
             );
-            Ok(FsFile::new(fd))
+            Ok(FsFile { fd })
         }
     }
 
@@ -111,7 +111,7 @@ impl FsTree {
                 std::io::Error::last_os_error()
             );
 
-            Ok(FsFile::new(fd))
+            Ok(FsFile { fd })
         }
     }
 
@@ -123,7 +123,7 @@ impl FsTree {
         unsafe {
             let c_rel_path = CString::new(rel_path)?;
             let res = libc::linkat(
-                f.fd(),
+                f.fd,
                 c"".as_ptr(),
                 self.fd,
                 c_rel_path.as_ptr(),
@@ -251,18 +251,6 @@ pub struct FsFile {
 }
 
 impl FsFile {
-    /// Create a new file wrapper
-    #[must_use]
-    pub fn new(fd: RawFd) -> Self {
-        Self { fd }
-    }
-
-    /// Get the underlying file descriptor
-    #[must_use]
-    pub fn fd(&self) -> RawFd {
-        self.fd
-    }
-
     /// Change owner of the file (`fchown`)
     ///
     /// # Errors
@@ -403,33 +391,33 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_dir_root_impl_new() -> anyhow::Result<()> {
+    fn test_fs_tree_impl_new() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
-        assert!(dir_root.fd >= 0);
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+        assert!(fs_tree.fd >= 0);
         Ok(())
     }
 
     #[test]
-    fn test_dir_root_impl_new_invalid_path() {
+    fn test_fs_tree_impl_new_invalid_path() {
         let result: anyhow::Result<FsTree> = FsTree::new("/nonexistent/path/to/directory");
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_my_file_impl_write_and_read() -> anyhow::Result<()> {
+    fn test_fs_file_impl_write_and_read() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a temporary file
-        let tmp_file = dir_root.create_tmp(".", 4096)?;
+        let tmp_file = fs_tree.create_tmp(".", 4096)?;
 
         // Write data to the file
         let data = b"Hello, World!";
         tmp_file.write(data)?;
 
         // Commit the temporary file
-        dir_root.commit_tmp("test_file.txt", tmp_file)?;
+        fs_tree.commit_tmp("test_file.txt", tmp_file)?;
 
         // Verify the file was created and has the correct content
         let content = fs::read(temp_dir.path().join("test_file.txt"))?;
@@ -441,14 +429,14 @@ mod tests {
     }
 
     #[test]
-    fn test_my_file_impl_chmod() -> anyhow::Result<()> {
+    fn test_fs_file_impl_chmod() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create and commit a file
-        let tmp_file = dir_root.create_tmp(".", 1024)?;
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
         tmp_file.chmod(0o644)?;
-        dir_root.commit_tmp("test_chmod.txt", tmp_file)?;
+        fs_tree.commit_tmp("test_chmod.txt", tmp_file)?;
 
         // Verify permissions
         let metadata = fs::metadata(temp_dir.path().join("test_chmod.txt"))?;
@@ -462,12 +450,12 @@ mod tests {
     }
 
     #[test]
-    fn test_dir_root_impl_symlink() -> anyhow::Result<()> {
+    fn test_fs_tree_impl_symlink() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a symlink to the target file
-        dir_root.symlink("link_to_target.txt", "target_file.txt")?;
+        fs_tree.symlink("link_to_target.txt", "target_file.txt")?;
 
         // Verify the symlink exists and points to the correct target
         let link_path = temp_dir.path().join("link_to_target.txt");
@@ -478,19 +466,19 @@ mod tests {
     }
 
     #[test]
-    fn test_dir_root_impl_remove_file() -> anyhow::Result<()> {
+    fn test_fs_tree_impl_remove_file() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a file
-        let tmp_file = dir_root.create_tmp(".", 1024)?;
-        dir_root.commit_tmp("file_to_remove.txt", tmp_file)?;
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
+        fs_tree.commit_tmp("file_to_remove.txt", tmp_file)?;
 
         // Verify the file exists
         assert!(temp_dir.path().join("file_to_remove.txt").exists());
 
         // Remove the file
-        dir_root.remove_file("file_to_remove.txt")?;
+        fs_tree.remove_file("file_to_remove.txt")?;
 
         // Verify the file is gone
         assert!(!temp_dir.path().join("file_to_remove.txt").exists());
@@ -499,19 +487,19 @@ mod tests {
     }
 
     #[test]
-    fn test_dir_root_impl_remove_dir() -> anyhow::Result<()> {
+    fn test_fs_tree_impl_mkdir_remove_dir() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a directory
         let subdir_path = temp_dir.path().join("subdir");
-        dir_root.mkdir("subdir")?;
+        fs_tree.mkdir("subdir")?;
 
         // Verify the directory exists
         assert!(subdir_path.exists());
 
         // Remove the directory
-        dir_root.remove_dir("subdir")?;
+        fs_tree.remove_dir("subdir")?;
 
         // Verify the directory is gone
         assert!(!subdir_path.exists());
@@ -520,19 +508,19 @@ mod tests {
     }
 
     #[test]
-    fn test_dir_root_impl_rename() -> anyhow::Result<()> {
+    fn test_fs_tree_impl_rename() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a file
-        let tmp_file = dir_root.create_tmp(".", 1024)?;
-        dir_root.commit_tmp("original_name.txt", tmp_file)?;
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
+        fs_tree.commit_tmp("original_name.txt", tmp_file)?;
 
         // Verify the file exists
         assert!(temp_dir.path().join("original_name.txt").exists());
 
         // Rename the file
-        dir_root.rename("original_name.txt", "new_name.txt")?;
+        fs_tree.rename("original_name.txt", "new_name.txt")?;
 
         // Verify the file is renamed
         assert!(!temp_dir.path().join("original_name.txt").exists());
@@ -542,12 +530,12 @@ mod tests {
     }
 
     #[test]
-    fn test_my_file_impl_multiple_writes() -> anyhow::Result<()> {
+    fn test_fs_file_impl_multiple_writes() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a temporary file
-        let tmp_file = dir_root.create_tmp(".", 4096)?;
+        let tmp_file = fs_tree.create_tmp(".", 4096)?;
 
         // Write data in multiple chunks
         let chunk1 = b"First chunk ";
@@ -557,7 +545,7 @@ mod tests {
         tmp_file.write(chunk1)?;
         tmp_file.write(chunk2)?;
         tmp_file.write(chunk3)?;
-        dir_root.commit_tmp("multi_write.txt", tmp_file)?;
+        fs_tree.commit_tmp("multi_write.txt", tmp_file)?;
 
         // Verify the file content - should contain the written data + allocated zeros
         let content = fs::read(temp_dir.path().join("multi_write.txt"))?;
@@ -573,12 +561,12 @@ mod tests {
     }
 
     #[test]
-    fn test_my_file_impl_set_mtime() -> anyhow::Result<()> {
+    fn test_fs_file_impl_set_mtime() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
-        let dir_root = FsTree::new(temp_dir.path().to_str().unwrap())?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a temporary file
-        let tmp_file = dir_root.create_tmp(".", 1024)?;
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
 
         // Set modification time
         let ts = Timestamp {
@@ -587,7 +575,7 @@ mod tests {
         };
         tmp_file.set_mtime(&ts)?;
 
-        dir_root.commit_tmp("mtime_test.txt", tmp_file)?;
+        fs_tree.commit_tmp("mtime_test.txt", tmp_file)?;
 
         // Verify modification time
         let metadata = fs::metadata(temp_dir.path().join("mtime_test.txt"))?;
