@@ -29,6 +29,9 @@ pub struct Config {
 
     /// Profile configuration, allowing user to select one configuration when launching a dir-sync instance
     profiles: BTreeMap<String, Profile>,
+
+    /// Name of default profile, when profile is not specified on the command line
+    default_profile: Option<String>,
 }
 
 impl Config {
@@ -55,7 +58,11 @@ impl Config {
     ///
     /// # Errors
     /// * invalid profile (profile not found, or include profile not found)
-    pub fn get_file_matcher(&self, profile: &str) -> anyhow::Result<FileMatcher> {
+    pub fn get_file_matcher(&self, profile: Option<&str>) -> anyhow::Result<Option<FileMatcher>> {
+        let Some(profile) = profile.or(self.default_profile.as_deref()) else {
+            return Ok(None);
+        };
+
         let mut ignore_name_regex_builder = PathRegexBuilder::new_name();
         let mut ignore_path_regex_builder = PathRegexBuilder::new_path();
         let mut white_list = vec![];
@@ -78,11 +85,11 @@ impl Config {
             white_list.extend_from_slice(&prof_data.white_list);
         }
 
-        Ok(FileMatcher {
+        Ok(Some(FileMatcher {
             ignore_name_regex: ignore_name_regex_builder.finalize()?,
             ignore_path_regex: ignore_path_regex_builder.finalize()?,
             white_list,
-        })
+        }))
     }
 }
 impl FromStr for Config {
@@ -143,15 +150,15 @@ struct Profile {
 #[derive(Clone)]
 pub struct FileMatcher {
     /// File/directory names to be ignored, at any level
-    ignore_name_regex: regex::Regex,
+    ignore_name_regex: Option<regex::Regex>,
     /// Relative paths to be ignored
-    ignore_path_regex: regex::Regex,
+    ignore_path_regex: Option<regex::Regex>,
     /// Relative paths to be considered, even if a parent folder is ignored
     white_list: Vec<PathBuf>,
 }
 impl FileMatcher {
     #[must_use]
-    pub fn is_ignored(&self, name: &str, rel_path: &Path) -> bool {
+    pub fn is_ignored(&self, rel_path: &Path) -> bool {
         // white list: any path needed to access a considered entry
         if self
             .white_list
@@ -161,10 +168,14 @@ impl FileMatcher {
             return false;
         }
         // ignore based on name or path
-        self.ignore_name_regex.is_match(name)
+        let name = rel_path.file_name().unwrap().to_str().unwrap();
+        self.ignore_name_regex
+            .as_ref()
+            .is_some_and(|r| r.is_match(name))
             || self
                 .ignore_path_regex
-                .is_match(rel_path.checked_as_str().unwrap())
+                .as_ref()
+                .is_some_and(|r| r.is_match(rel_path.checked_as_str().unwrap()))
     }
 }
 
@@ -186,7 +197,7 @@ pub mod tests {
                 .join(std::env::var("USER").unwrap()),
             profiles: BTreeMap::from([
                 (
-                    String::from("base"),
+                    String::from("default"),
                     Profile {
                         include: ZeroOrOneOrList::Zero,
                         ignore_name: vec![
@@ -203,13 +214,14 @@ pub mod tests {
                 (
                     String::from("data"),
                     Profile {
-                        include: ZeroOrOneOrList::One(String::from("base")),
+                        include: ZeroOrOneOrList::One(String::from("default")),
                         ignore_name: vec![],
                         ignore_path: vec![PathBuf::from("*/bar")],
                         white_list: vec![PathBuf::from("folder/foo~/toto.bak")],
                     },
                 ),
             ]),
+            default_profile: None,
         };
         assert_eq!(cfg, expected_cfg);
     }
@@ -217,16 +229,18 @@ pub mod tests {
     #[test]
     fn test_cfg_get_file_matcher() {
         let cfg = load_ut_cfg().unwrap();
-        assert!(cfg.get_file_matcher("unknown").is_err());
-        let file_matcher = cfg.get_file_matcher("data").unwrap();
+        assert!(cfg.get_file_matcher(Some("unknown")).is_err());
+        assert!(cfg.get_file_matcher(None).unwrap().is_none());
 
-        assert!(file_matcher.is_ignored("toto.bak", Path::new("toto.bak")));
-        assert!(!file_matcher.is_ignored("bar", Path::new("bar")));
-        assert!(file_matcher.is_ignored("bar", Path::new("foo/bar")));
-        assert!(!file_matcher.is_ignored("bar", Path::new("foo/sub/bar")));
-        assert!(file_matcher.is_ignored("baz~", Path::new("folder/baz~")));
-        assert!(!file_matcher.is_ignored("foo~", Path::new("folder/foo~")));
-        assert!(!file_matcher.is_ignored("toto.bak", Path::new("folder/foo~/toto.bak")));
-        assert!(file_matcher.is_ignored("titi.bak", Path::new("folder/foo~/titi.bak")));
+        let file_matcher = cfg.get_file_matcher(Some("data")).unwrap().unwrap();
+
+        assert!(file_matcher.is_ignored(Path::new("toto.bak")));
+        assert!(!file_matcher.is_ignored(Path::new("bar")));
+        assert!(file_matcher.is_ignored(Path::new("foo/bar")));
+        assert!(!file_matcher.is_ignored(Path::new("foo/sub/bar")));
+        assert!(file_matcher.is_ignored(Path::new("folder/baz~")));
+        assert!(!file_matcher.is_ignored(Path::new("folder/foo~")));
+        assert!(!file_matcher.is_ignored(Path::new("folder/foo~/toto.bak")));
+        assert!(file_matcher.is_ignored(Path::new("folder/foo~/titi.bak")));
     }
 }

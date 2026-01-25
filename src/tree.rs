@@ -1,7 +1,5 @@
 //! Generic interface for one input of `dir-sync`
 
-use std::path::Path;
-
 use flume::{Receiver, Sender};
 
 use crate::proto::{ActionReq, ActionRsp, MyDirEntry};
@@ -9,10 +7,10 @@ use crate::proto::{ActionReq, ActionRsp, MyDirEntry};
 /// Access to metadata of entries in the tree
 pub trait TreeMetadata {
     /// Get one entry in the tree
-    fn get_entry(&self, rel_path: &Path) -> Option<&MyDirEntry>;
+    fn get_entry(&self, rel_path: &str) -> Option<&MyDirEntry>;
 
     /// Get content of one directory in the tree (sorted)
-    fn get_dir_content(&self, rel_path: &Path) -> &[MyDirEntry];
+    fn get_dir_content(&self, rel_path: &str) -> &[MyDirEntry];
 }
 
 /// Generic access to one Tree (local or remote)

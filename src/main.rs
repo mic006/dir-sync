@@ -5,18 +5,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser as _;
+use prost_types::Timestamp;
 
 use crate::config::Config;
-use crate::dir_stat::DirStat;
-use crate::dir_walk::DirWalk;
-use crate::generic::fs::MessageExt as _;
+use crate::generic::fs::{MessageExt as _, PathExt as _};
 use crate::generic::libc::reset_sigpipe;
 use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
-use crate::proto::MetadataSnap;
+use crate::proto::{MetadataSnap, TimestampExt as _};
+use crate::tree::Tree;
+use crate::tree_local::TreeLocal;
 
 pub mod config;
-mod dir_stat;
-mod dir_walk;
 pub mod generic {
     pub mod file;
     pub mod fs;
@@ -27,6 +26,7 @@ pub mod generic {
 }
 pub mod proto;
 pub mod tree;
+pub mod tree_local;
 
 /// Dir-sync
 ///
@@ -46,7 +46,7 @@ struct Arg {
     log: Option<PathBuf>,
     /// Directories to compare
     #[arg(required = true)]
-    dirs: Vec<PathBuf>,
+    dirs: Vec<String>,
 }
 
 /// Mode of operation
@@ -172,13 +172,21 @@ async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTa
         arg.dirs.len() == 1,
         "RefreshMetadataSnap mode: expects a single directory"
     );
-    let dir = std::fs::canonicalize(&arg.dirs[0])?;
+    let dir = canonicalize(&arg.dirs[0])?;
 
     let config = Arc::new(Config::from_file(None)?);
+    let file_matcher = config.get_file_matcher(arg.profile.as_deref())?;
+    let ts = Timestamp::now();
 
-    let dir_receiver = DirWalk::spawn(&task_tracker, &dir, None)?;
-    DirStat::spawn(config, &task_tracker, &dir, dir_receiver)?;
-    Ok(TaskExit::SecondaryTaskKeepRunning)
+    let mut tree = TreeLocal::spawn(config, &task_tracker, &dir, ts, file_matcher)?;
+    tree.wait_for_tree().await?;
+
+    Ok(TaskExit::MainTaskStopAppSuccess)
+}
+
+fn canonicalize(p: &str) -> anyhow::Result<String> {
+    let p = std::fs::canonicalize(p)?;
+    Ok(p.checked_as_str()?.to_owned())
 }
 
 #[cfg(test)]

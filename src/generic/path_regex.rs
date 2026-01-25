@@ -49,12 +49,19 @@ impl PathRegexBuilder {
 
     /// Generate the regex matching any of the input patterns
     ///
+    /// # Returns
+    /// * Ok(Some(regex)): regex matching the added patterns
+    /// * Ok(None): no pattern added
+    ///
     /// # Errors
     /// * invalid final regex (unexpected, as regex characters in input patterns are escaped)
-    pub fn finalize(mut self) -> anyhow::Result<regex::Regex> {
-        anyhow::ensure!(self.subsequent, "Need to add at least one pattern to match");
+    pub fn finalize(mut self) -> anyhow::Result<Option<regex::Regex>> {
+        if !self.subsequent {
+            // no pattern added
+            return Ok(None);
+        }
         self.re.push_str(")$");
-        Ok(regex::Regex::new(&self.re)?)
+        Ok(Some(regex::Regex::new(&self.re)?))
     }
 }
 
@@ -77,12 +84,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_build_empty_regex() {
+        let builder = PathRegexBuilder::new_name();
+        let re = builder.finalize().unwrap();
+        assert!(re.is_none());
+    }
+
+    #[test]
     fn test_build_name_regex() {
         let mut builder = PathRegexBuilder::new_name();
         for pattern in ["*.bak", "*.o", "*.old", "*~", ".git", "[12].gz"] {
             builder.add_pattern(pattern);
         }
-        let re = builder.finalize().unwrap();
+        let re = builder.finalize().unwrap().unwrap();
 
         assert!(re.is_match("foo.bak"));
         assert!(!re.is_match("foo.bak.gz"));
@@ -103,7 +117,7 @@ mod tests {
         for pattern in ["*/bar", "foo/$baz/*/*.gz"] {
             builder.add_pattern(pattern);
         }
-        let re = builder.finalize().unwrap();
+        let re = builder.finalize().unwrap().unwrap();
 
         assert!(re.is_match("xxx/bar"));
         assert!(!re.is_match("bar"));

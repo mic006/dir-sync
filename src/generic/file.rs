@@ -21,6 +21,12 @@ pub struct FsTree {
     fd: RawFd,
 }
 
+impl std::fmt::Display for FsTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FsTree(fd #{})", self.fd)
+    }
+}
+
 impl FsTree {
     /// Create new instance, by opening root directory of a tree
     ///
@@ -38,6 +44,7 @@ impl FsTree {
                 "FsTree::new({path}) failed: {}",
                 std::io::Error::last_os_error()
             );
+            log::debug!("FsTree::new({path}): fd #{fd}");
             Ok(Self { fd })
         }
     }
