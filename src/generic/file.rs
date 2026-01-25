@@ -3,9 +3,13 @@
 #![allow(unsafe_code)]
 
 use std::ffi::CString;
-use std::os::fd::RawFd;
+use std::fs::File;
+use std::os::fd::{FromRawFd as _, IntoRawFd as _, RawFd};
 
+use blake3::Hasher;
 use prost_types::Timestamp;
+
+pub use blake3::Hash as MyHash;
 
 /// Directory tree operations
 pub struct FsTree {
@@ -427,6 +431,69 @@ impl FsFile {
         }
     }
 
+    /// Compute hash (blake3) of file
+    ///
+    /// Compute hash of file, using multithreaded `Hasher::update_rayon()` when appropriate
+    ///
+    /// # Errors
+    /// - Returns error if the file cannot be read
+    // Concept is copied from blake3 crate
+    pub fn compute_hash(&self) -> anyhow::Result<MyHash> {
+        // get file size
+        let file_size = self.file_size()?;
+        let mut hasher = Hasher::new();
+
+        if file_size >= 128 * 1024 {
+            // big file: mmap the file for multithreaded hash
+            let mmap = unsafe { memmap2::Mmap::map(self.fd)? };
+            hasher.update_rayon(&mmap);
+        } else {
+            unsafe {
+                // small file
+                // reset offset to read all data
+                self.reset_offset()?;
+                let file = File::from_raw_fd(self.fd);
+                hasher.update_reader(&file)?;
+                // get back ownership of the file descriptor
+                let _ = file.into_raw_fd();
+            }
+        }
+        Ok(hasher.finalize())
+    }
+
+    /// Reset offset
+    ///
+    /// # Errors
+    /// - Returns error if the offset cannot be reset
+    pub fn reset_offset(&self) -> anyhow::Result<()> {
+        unsafe {
+            let res = libc::lseek(self.fd, 0, libc::SEEK_SET);
+            anyhow::ensure!(
+                res == 0,
+                "FsFile::reset_offset() failed: {}",
+                std::io::Error::last_os_error()
+            );
+            Ok(())
+        }
+    }
+
+    /// Get file size
+    ///
+    /// # Errors
+    /// - Returns error if the file stat cannot be retrieved
+    pub fn file_size(&self) -> anyhow::Result<u64> {
+        unsafe {
+            let mut stat = std::mem::zeroed();
+            let res = libc::fstat(self.fd, &raw mut stat);
+            anyhow::ensure!(
+                res == 0,
+                "FsFile::file_size() failed: {}",
+                std::io::Error::last_os_error()
+            );
+            Ok(stat.st_size.cast_unsigned())
+        }
+    }
+
     /// Close the file (`close`)
     ///
     /// # Errors
@@ -462,6 +529,7 @@ impl Drop for FsFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blake3::Hash;
     use std::fs;
     use tempfile::TempDir;
 
@@ -860,6 +928,85 @@ mod tests {
 
         // Verify fd is invalidated
         assert_eq!(fs_tree.fd, -1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_file_size() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a file with a known size
+        let file_size: u64 = 2048;
+        let tmp_file = fs_tree.create_tmp(".", file_size)?;
+        let test_data = b"Hello, file size test!";
+        tmp_file.write(test_data)?;
+        fs_tree.commit_tmp("size_test.txt", tmp_file)?;
+
+        // Open the file and verify its size
+        let f = fs_tree.open("size_test.txt")?;
+        let actual_size = f.file_size()?;
+        assert_eq!(actual_size, file_size);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_file_compute_hash() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a file with known content
+        let tmp_file = fs_tree.create_tmp(".", 30)?;
+        let test_data = b"Test data for hash computation";
+        tmp_file.write(test_data)?;
+        fs_tree.commit_tmp("hash_test.txt", tmp_file)?;
+
+        // Open the file and compute its hash
+        let f = fs_tree.open("hash_test.txt")?;
+        let hash = f.compute_hash()?;
+
+        // Verify hash value
+        assert_eq!(
+            hash,
+            Hash::from_hex("64b69d137837901af5b3b80dd82f2a0e0cbb4949c8cd7c384fa8bfd550c28ebc")?
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_file_write_then_compute_hash() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a temporary file
+        let tmp_file = fs_tree.create_tmp(".", 30)?;
+
+        // Write data to the file
+        let data = b"Test data for hash computation";
+        tmp_file.write(data)?;
+        let hash1 = tmp_file.compute_hash()?;
+
+        // Verify hash value
+        assert_eq!(
+            hash1,
+            Hash::from_hex("64b69d137837901af5b3b80dd82f2a0e0cbb4949c8cd7c384fa8bfd550c28ebc")?
+        );
+
+        // Commit the temporary file
+        fs_tree.commit_tmp("write_hash_test.txt", tmp_file)?;
+
+        // Open the file and compute hash again
+        let f = fs_tree.open("write_hash_test.txt")?;
+        let hash2 = f.compute_hash()?;
+
+        // Verify hash value
+        assert_eq!(
+            hash2,
+            Hash::from_hex("64b69d137837901af5b3b80dd82f2a0e0cbb4949c8cd7c384fa8bfd550c28ebc")?
+        );
 
         Ok(())
     }

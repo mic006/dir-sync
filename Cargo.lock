@@ -271,6 +271,7 @@ dependencies = [
  "futures",
  "libc",
  "log",
+ "memmap2",
  "prost",
  "prost-build",
  "prost-types",

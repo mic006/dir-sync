@@ -8,6 +8,13 @@
 
 - Duplicate <https://github.com/hangj/prost-stream/blob/main/src/stream.rs> implementation, but separating Read & Write (pipes)
 - reinject in clonux
+- not ideal: 2 read for a short message (<=127), 3 for longer messages
+=> do an implementation reducing the number of reads and number of moves
+
+- allocate a 4K buffer (to start with)
+- always attempt to read until end of buffer
+- process messages in place while it fits
+- when it does not fit, move data at buffer start + reallocate + read
 
 ## Main level
 
@@ -18,6 +25,15 @@ Tree flow
 
 - use flume bounded queues to uncouple ownership ?
 Maybe 0 sized queues so that values are simply exchanged
+
+### TreeLocal
+
+Implementation
+
+- single object
+- add dir_walk task
+- add dir_stat task
+- use flume to move tree to main object
 
 ## WIP
 
