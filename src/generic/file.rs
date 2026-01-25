@@ -5,11 +5,16 @@
 use std::ffi::CString;
 use std::fs::File;
 use std::os::fd::{FromRawFd as _, IntoRawFd as _, RawFd};
+use std::path::Path;
 
 use blake3::Hasher;
 use prost_types::Timestamp;
 
 pub use blake3::Hash as MyHash;
+
+use crate::proto::{
+    DeviceData, DirectoryData, MyDirEntry, PROTO_NULL_VALUE, RegularData, Specific,
+};
 
 /// Directory tree operations
 pub struct FsTree {
@@ -34,6 +39,161 @@ impl FsTree {
                 std::io::Error::last_os_error()
             );
             Ok(Self { fd })
+        }
+    }
+
+    /// Get directory entries (`fdopendir` & `readdir`)
+    ///
+    /// ignore: callback to ignore entries; return true to ignore the entry
+    ///
+    /// # Errors
+    /// - Returns error if the directory cannot be read
+    pub fn walk_dir<F>(&self, rel_path: &str, mut ignore: F) -> anyhow::Result<Vec<MyDirEntry>>
+    where
+        F: FnMut(&Path) -> bool,
+    {
+        unsafe {
+            let c_rel_path = CString::new(rel_path)?;
+            let dir_fd = libc::openat(
+                self.fd,
+                c_rel_path.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            );
+            anyhow::ensure!(
+                dir_fd >= 0,
+                "FsTree::walk_dir({rel_path}) openat failed: {}",
+                std::io::Error::last_os_error()
+            );
+
+            let mut dirp = ScopedDirp::fdopendir(dir_fd)?;
+
+            let mut entries = Vec::new();
+            let p_rel_path = Path::new(rel_path);
+            while let entry = dirp.readdir()
+                && !entry.is_null()
+            {
+                let dirent = &*entry;
+                let d_name = std::ffi::CStr::from_ptr(dirent.d_name.as_ptr());
+                let name = d_name.to_string_lossy();
+                if name == "." || name == ".." {
+                    continue;
+                }
+                if ignore(&p_rel_path.join(&*name)) {
+                    continue;
+                }
+                let my_dir_entry = Self::statat(dir_fd, &name)?;
+                entries.push(my_dir_entry);
+            }
+
+            dirp.close()?;
+
+            Ok(entries)
+        }
+    }
+
+    /// Get file metadata (`fstatat`)
+    ///
+    /// Note: `file_name` shall be a direct file entry in `dirfd` directory
+    ///
+    /// # Errors
+    /// - Returns error if the file metadata cannot be retrieved
+    pub fn stat(&self, file_name: &str) -> anyhow::Result<MyDirEntry> {
+        Self::statat(self.fd, file_name)
+    }
+
+    /// Get file metadata (`fstatat`)
+    ///
+    /// Note: `file_name` shall be a direct file entry in `dirfd` directory
+    ///
+    /// # Errors
+    /// - Returns error if the file metadata cannot be retrieved
+    fn statat(dirfd: RawFd, file_name: &str) -> anyhow::Result<MyDirEntry> {
+        /// Build `DeviceData` from rdev value
+        fn build_device_data(rdev: u64) -> DeviceData {
+            /// Get major id from rdev value
+            fn major(rdev: u64) -> u32 {
+                // code from Glibc bits/sysmacros.h
+                let mut major = ((rdev & 0x0000_0000_000f_ff00_u64) >> 8) as u32;
+                major |= ((rdev & 0xffff_f000_0000_0000_u64) >> 32) as u32;
+                major
+            }
+            /// Get minor id from rdev value
+            fn minor(rdev: u64) -> u32 {
+                // code from Glibc bits/sysmacros.h
+                let mut minor = (rdev & 0x0000_0000_0000_00ff_u64) as u32;
+                minor |= ((rdev & 0x0000_0fff_fff0_0000_u64) >> 12) as u32;
+                minor
+            }
+            DeviceData {
+                major: major(rdev),
+                minor: minor(rdev),
+            }
+        }
+        unsafe {
+            let c_rel_path = CString::new(file_name)?;
+            let mut stat = std::mem::zeroed();
+            let res = libc::fstatat(
+                dirfd,
+                c_rel_path.as_ptr(),
+                &raw mut stat,
+                libc::AT_SYMLINK_NOFOLLOW,
+            );
+            anyhow::ensure!(
+                res == 0,
+                "FsTree::statat({file_name}) failed: {}",
+                std::io::Error::last_os_error()
+            );
+
+            let file_type = stat.st_mode & libc::S_IFMT;
+
+            let specific = if file_type == libc::S_IFIFO {
+                Specific::Fifo(PROTO_NULL_VALUE)
+            } else if file_type == libc::S_IFCHR {
+                Specific::Character(build_device_data(stat.st_dev))
+            } else if file_type == libc::S_IFDIR {
+                // content is unknown at this time
+                Specific::Directory(DirectoryData { content: vec![] })
+            } else if file_type == libc::S_IFBLK {
+                Specific::Block(build_device_data(stat.st_dev))
+            } else if file_type == libc::S_IFREG {
+                Specific::Regular(RegularData {
+                    size: stat.st_size.cast_unsigned(),
+                    hash: Vec::default(),
+                })
+            } else if file_type == libc::S_IFLNK {
+                let mut buf = vec![0u8; libc::PATH_MAX as usize];
+                let len = libc::readlinkat(
+                    dirfd,
+                    c_rel_path.as_ptr(),
+                    buf.as_mut_ptr().cast(),
+                    buf.len(),
+                );
+                anyhow::ensure!(
+                    len >= 0,
+                    "FsTree::statat({file_name}) readlink failed: {}",
+                    std::io::Error::last_os_error()
+                );
+                buf.truncate(len.cast_unsigned());
+                let link_target = String::from_utf8(buf)?;
+                Specific::Symlink(link_target)
+            } else if file_type == libc::S_IFSOCK {
+                Specific::Socket(PROTO_NULL_VALUE)
+            } else {
+                anyhow::bail!("Unsupported file type at '{file_name}'");
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let mtime = Some(Timestamp {
+                seconds: stat.st_mtime,
+                nanos: stat.st_mtime_nsec as i32,
+            });
+            Ok(MyDirEntry {
+                file_name: file_name.into(),
+                permissions: stat.st_mode & 0xFFF,
+                uid: stat.st_uid,
+                gid: stat.st_gid,
+                mtime,
+                specific: Some(specific),
+            })
         }
     }
 
@@ -319,6 +479,51 @@ impl FsTree {
 }
 
 impl Drop for FsTree {
+    fn drop(&mut self) {
+        drop(self.close());
+    }
+}
+
+/// Scoped directory pointer wrapper
+struct ScopedDirp {
+    dirp: *mut libc::DIR,
+}
+impl ScopedDirp {
+    /// Open directory from file descriptor (`fdopendir`)
+    fn fdopendir(fd: RawFd) -> anyhow::Result<Self> {
+        unsafe {
+            let dirp = libc::fdopendir(fd);
+            anyhow::ensure!(
+                !dirp.is_null(),
+                "ScopedDirp::fdopendir() failed: {}",
+                std::io::Error::last_os_error()
+            );
+            Ok(Self { dirp })
+        }
+    }
+
+    /// Read directory entry (`readdir`)
+    fn readdir(&self) -> *mut libc::dirent {
+        unsafe { libc::readdir(self.dirp) }
+    }
+
+    /// Close directory (`closedir`)
+    fn close(&mut self) -> anyhow::Result<()> {
+        unsafe {
+            if !self.dirp.is_null() {
+                let res = libc::closedir(self.dirp);
+                self.dirp = std::ptr::null_mut();
+                anyhow::ensure!(
+                    res == 0,
+                    "ScopedDirp::close() failed: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+            Ok(())
+        }
+    }
+}
+impl Drop for ScopedDirp {
     fn drop(&mut self) {
         drop(self.close());
     }
@@ -1007,6 +1212,95 @@ mod tests {
             hash2,
             Hash::from_hex("64b69d137837901af5b3b80dd82f2a0e0cbb4949c8cd7c384fa8bfd550c28ebc")?
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_tree_walk_dir() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a sub-folder
+        fs_tree.mkdir("subdir")?;
+
+        // Create a regular file
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
+        tmp_file.write(b"Regular file content")?;
+        fs_tree.commit_tmp("regular_file.txt", tmp_file)?;
+
+        // Create a symlink
+        fs_tree.symlink("link_to_file.txt", "regular_file.txt")?;
+
+        // Walk the directory and collect entries
+        let entries = fs_tree.walk_dir(".", |_| false)?;
+
+        // Verify we have the expected entries
+        assert_eq!(
+            entries.len(),
+            3,
+            "Expected 3 entries: subdir, regular_file.txt, link_to_file.txt"
+        );
+
+        // Create a set of file names for easier checking
+        let mut file_names: Vec<String> = entries.iter().map(|e| e.file_name.clone()).collect();
+        file_names.sort();
+
+        // Verify all expected entries are present
+        assert!(file_names.contains(&"link_to_file.txt".to_string()));
+        assert!(file_names.contains(&"regular_file.txt".to_string()));
+        assert!(file_names.contains(&"subdir".to_string()));
+
+        // Verify entry types
+        for entry in &entries {
+            match entry.file_name.as_str() {
+                "subdir" => {
+                    assert!(matches!(entry.specific, Some(Specific::Directory(_))));
+                }
+                "regular_file.txt" => {
+                    assert!(matches!(entry.specific, Some(Specific::Regular(_))));
+                }
+                "link_to_file.txt" => {
+                    assert!(matches!(entry.specific, Some(Specific::Symlink(_))));
+                }
+                _ => panic!("Unexpected entry: {}", entry.file_name),
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_tree_walk_dir_with_ignore() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a sub-folder
+        fs_tree.mkdir("subdir")?;
+
+        // Create a regular file
+        let tmp_file = fs_tree.create_tmp(".", 1024)?;
+        tmp_file.write(b"Regular file content")?;
+        fs_tree.commit_tmp("regular_file.txt", tmp_file)?;
+
+        // Create a symlink
+        fs_tree.symlink("link_to_file.txt", "regular_file.txt")?;
+
+        // Walk the directory with an ignore filter that ignores symlinks
+        let entries =
+            fs_tree.walk_dir(".", |path| path.to_string_lossy().contains("link_to_file"))?;
+
+        // Verify we have 2 entries (subdir and regular_file.txt, but not the symlink)
+        assert_eq!(
+            entries.len(),
+            2,
+            "Expected 2 entries after ignoring symlink"
+        );
+
+        let file_names: Vec<String> = entries.iter().map(|e| e.file_name.clone()).collect();
+        assert!(!file_names.contains(&"link_to_file.txt".to_string()));
+        assert!(file_names.contains(&"regular_file.txt".to_string()));
+        assert!(file_names.contains(&"subdir".to_string()));
 
         Ok(())
     }
