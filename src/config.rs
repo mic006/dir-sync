@@ -192,8 +192,8 @@ pub mod tests {
     fn load_cfg() {
         let cfg = load_ut_cfg().unwrap();
         let expected_cfg = Config {
-            local_metadata_snap_path: PathBuf::from("/var/local/dir-sync"),
-            local_metadata_snap_path_user: PathBuf::from("/var/local/dir-sync")
+            local_metadata_snap_path: PathBuf::from("/invalid/path"),
+            local_metadata_snap_path_user: PathBuf::from("/invalid/path")
                 .join(std::env::var("USER").unwrap()),
             profiles: BTreeMap::from([
                 (

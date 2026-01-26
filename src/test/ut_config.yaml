@@ -1,7 +1,7 @@
 # Path to store metadata snapshot of local paths, to speed-up further analysis
 # Data will be stored in a sub-folder named with the dir-sync UID
 # Sub-folders are NOT created by dir-sync, they shall be created manually
-local_metadata_snap_path: /var/local/dir-sync
+local_metadata_snap_path: /invalid/path
 
 # Profile configuration, allowing user to select one configuration when launching a dir-sync instance
 # dict: <profile_name>: <profile_settings>
