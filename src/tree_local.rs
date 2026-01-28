@@ -65,8 +65,9 @@ impl TreeLocal {
         let (sender_snap, receiver_snap) = flume::bounded(1);
 
         task_tracker.spawn_blocking({
+            let task_tracker = task_tracker.clone();
             let fs_tree = fs_tree.clone();
-            move || Self::walk_task(fs_tree, sender_content, file_matcher)
+            move || Self::walk_task(task_tracker, fs_tree, sender_content, file_matcher)
         })?;
         task_tracker.spawn(Self::hash_task(
             fs_tree.clone(),
@@ -87,6 +88,7 @@ impl TreeLocal {
     /// Task to walk the tree
     /// 1st step
     fn walk_task(
+        task_tracker: TaskTracker,
         fs_tree: Arc<FsTree>,
         sender_content: Sender<DirContent>,
         file_matcher: Option<FileMatcher>,
@@ -94,6 +96,8 @@ impl TreeLocal {
         let mut dir_stack = vec![String::from(".")];
 
         while let Some(rel_path) = dir_stack.pop() {
+            task_tracker.get_shutdown_req_as_result()?;
+
             log::debug!("walk[{fs_tree}]: entering {rel_path}");
 
             let entries = fs_tree.walk_dir(&rel_path, |p| {

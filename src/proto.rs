@@ -1,6 +1,7 @@
 //! Protobuf related code
 
 #![allow(
+    clippy::doc_lazy_continuation,
     clippy::enum_variant_names,
     clippy::large_enum_variant,
     clippy::pedantic
