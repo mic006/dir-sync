@@ -16,6 +16,7 @@ use crate::tree::Tree;
 use crate::tree_local::TreeLocal;
 
 pub mod config;
+pub mod diff;
 pub mod generic {
     pub mod file;
     pub mod fs;
