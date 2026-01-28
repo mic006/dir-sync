@@ -121,9 +121,11 @@ pub fn diff_trees(trees: &[&dyn TreeMetadata]) -> Vec<DiffEntry> {
             }
 
             let file_name = file_name.unwrap();
+            let entry_rel_path = rel_path.clone() + "/" + file_name;
+
             if is_dir {
                 // inspect sub-directories
-                dir_tmp_stack.push(rel_path.clone() + "/" + file_name);
+                dir_tmp_stack.push(entry_rel_path.clone());
             }
 
             // identify the diff
@@ -195,7 +197,7 @@ mod tests {
             uid: 1000,
             gid: 1000,
             mtime: Some(Timestamp {
-                seconds: 1234567890,
+                seconds: 1_234_567_890,
                 nanos: 0,
             }),
         }
@@ -210,7 +212,7 @@ mod tests {
             uid: 1000,
             gid: 1000,
             mtime: Some(Timestamp {
-                seconds: 1234567890,
+                seconds: 1_234_567_890,
                 nanos: 0,
             }),
         }
@@ -224,7 +226,7 @@ mod tests {
             uid: 1000,
             gid: 1000,
             mtime: Some(Timestamp {
-                seconds: 1234567890,
+                seconds: 1_234_567_890,
                 nanos: 0,
             }),
         }
@@ -244,7 +246,7 @@ mod tests {
         b.permissions = a.permissions;
         b.uid = a.uid;
         b.gid = a.gid;
-        b.mtime = a.mtime.clone();
+        b.mtime = a.mtime;
         assert_eq!(diff_entries(&a, &b), DiffType::TYPE);
     }
 
@@ -291,7 +293,7 @@ mod tests {
     fn test_diff_entries_mtime_diff() {
         let mut a = create_file_entry("file.txt", 10, 100);
         a.mtime = Some(Timestamp {
-            seconds: 987654321,
+            seconds: 987_654_321,
             nanos: 0,
         });
         let b = create_file_entry("file.txt", 10, 100);
@@ -313,23 +315,21 @@ mod tests {
 
     impl TreeMetadata for MockTree {
         fn get_entry(&self, rel_path: &str) -> Option<&MyDirEntry> {
-            use crate::proto::MyDirEntryExt;
             self.root.get_entry(rel_path)
         }
 
         fn get_dir_content(&self, rel_path: &str) -> &[MyDirEntry] {
-            use crate::proto::MyDirEntryExt;
-            if let Some(entry) = self.root.get_entry(rel_path) {
-                if let Some(Specific::Directory(data)) = &entry.specific {
-                    return &data.content;
-                }
+            if let Some(entry) = self.root.get_entry(rel_path)
+                && let Some(Specific::Directory(data)) = &entry.specific
+            {
+                return &data.content;
             }
             &[]
         }
     }
 
     fn create_root(content: Vec<MyDirEntry>) -> MyDirEntry {
-        create_dir_entry(".", content)
+        create_dir_entry("dir", content)
     }
 
     #[test]
@@ -356,7 +356,7 @@ mod tests {
         };
         let diffs = diff_trees(&[&tree1, &tree2]);
         assert_eq!(diffs.len(), 1);
-        assert_eq!(diffs[0].rel_path, "file.txt");
+        assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::TYPE);
         assert!(diffs[0].entries[0].is_none());
         assert!(diffs[0].entries[1].is_some());
@@ -373,7 +373,7 @@ mod tests {
         };
         let diffs = diff_trees(&[&tree1, &tree2]);
         assert_eq!(diffs.len(), 1);
-        assert_eq!(diffs[0].rel_path, "file.txt");
+        assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::TYPE);
         assert!(diffs[0].entries[0].is_some());
         assert!(diffs[0].entries[1].is_none());
@@ -391,7 +391,7 @@ mod tests {
         };
         let diffs = diff_trees(&[&tree1, &tree2]);
         assert_eq!(diffs.len(), 1);
-        assert_eq!(diffs[0].rel_path, "file.txt");
+        assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::CONTENT);
         assert!(diffs[0].entries[0].is_some());
         assert!(diffs[0].entries[1].is_some());
@@ -415,7 +415,7 @@ mod tests {
         };
         let diffs = diff_trees(&[&tree1, &tree2]);
         assert_eq!(diffs.len(), 1);
-        assert_eq!(diffs[0].rel_path, "dir/nested.txt");
+        assert_eq!(diffs[0].rel_path, "./dir/nested.txt");
         assert_eq!(diffs[0].diff, DiffType::CONTENT);
     }
 
@@ -434,7 +434,7 @@ mod tests {
         };
         let diffs = diff_trees(&[&tree1, &tree2, &tree3]);
         assert_eq!(diffs.len(), 1);
-        assert_eq!(diffs[0].rel_path, "file.txt");
+        assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::TYPE | DiffType::CONTENT);
         assert!(diffs[0].entries[0].is_some());
         assert!(diffs[0].entries[1].is_some());
