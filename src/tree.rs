@@ -25,3 +25,12 @@ pub trait Tree: TreeMetadata {
     /// Get receiver to get FS action responses
     fn get_fs_action_responder(&self) -> Receiver<ActionRsp>;
 }
+
+/// Consider a `Box<dyn Tree>` as a ref to `TreeMetadata`
+///
+/// Used to magically consider a `&Vec<Box<dyn Tree>>` as a `&[AsRef<dyn TreeMetadata>]` parameter
+impl AsRef<dyn TreeMetadata> for Box<dyn Tree + Send> {
+    fn as_ref(&self) -> &(dyn TreeMetadata + 'static) {
+        &**self
+    }
+}

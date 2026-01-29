@@ -92,8 +92,21 @@ impl std::fmt::Display for DiffEntry {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum DiffMode {
+    /// Get complete diff output
+    Output,
+    /// Get only a status = existence of some differences
+    Status,
+}
+
 /// Compare multiple trees and determine differences
-pub fn diff_trees(trees: &[&dyn TreeMetadata]) -> Vec<DiffEntry> {
+///
+/// # Returns
+/// - []: all trees are similar, no difference found
+/// - [first diff]: when mode == Status, report only the first difference found
+/// - [all diffs]: when mode == Output, report all differences found
+pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Vec<DiffEntry> {
     let all_trees: u32 = (1 << trees.len()) - 1;
     let mut dir_stack = vec![String::from(".")];
     let mut dir_tmp_stack = vec![];
@@ -110,7 +123,7 @@ pub fn diff_trees(trees: &[&dyn TreeMetadata]) -> Vec<DiffEntry> {
             // reset indexes
             indexes[i] = 0;
             // get content
-            dir_contents[i] = trees[i].get_dir_content(&rel_path);
+            dir_contents[i] = trees[i].as_ref().get_dir_content(&rel_path);
         }
 
         // identify diffs
@@ -185,6 +198,10 @@ pub fn diff_trees(trees: &[&dyn TreeMetadata]) -> Vec<DiffEntry> {
                 };
                 log::debug!("[diff]: {diff_entry}");
                 diffs.push(diff_entry);
+                if mode == DiffMode::Status {
+                    log::debug!("[diff]: status mode, early exit");
+                    return diffs;
+                }
             }
 
             // increment indexes for consumed entry
@@ -354,6 +371,12 @@ mod tests {
         }
     }
 
+    impl AsRef<dyn TreeMetadata> for MockTree {
+        fn as_ref(&self) -> &(dyn TreeMetadata + 'static) {
+            self
+        }
+    }
+
     fn create_root(content: Vec<MyDirEntry>) -> MyDirEntry {
         create_dir_entry("dir", content)
     }
@@ -369,7 +392,7 @@ mod tests {
         let tree2 = MockTree {
             root: create_root(content),
         };
-        let diffs = diff_trees(&[&tree1, &tree2]);
+        let diffs = diff_trees(&[&tree1, &tree2], DiffMode::Output);
         assert!(diffs.is_empty());
     }
 
@@ -384,7 +407,7 @@ mod tests {
         let tree2 = MockTree {
             root: create_root(content2),
         };
-        let diffs = diff_trees(&[&tree1, &tree2]);
+        let diffs = diff_trees(&[&tree1, &tree2], DiffMode::Output);
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::TYPE);
@@ -403,7 +426,7 @@ mod tests {
         let tree2 = MockTree {
             root: create_root(vec![]),
         };
-        let diffs = diff_trees(&[&tree1, &tree2]);
+        let diffs = diff_trees(&[&tree1, &tree2], DiffMode::Output);
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::TYPE);
@@ -423,7 +446,7 @@ mod tests {
         let tree2 = MockTree {
             root: create_root(content2),
         };
-        let diffs = diff_trees(&[&tree1, &tree2]);
+        let diffs = diff_trees(&[&tree1, &tree2], DiffMode::Output);
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::CONTENT);
@@ -449,7 +472,7 @@ mod tests {
         let tree2 = MockTree {
             root: create_root(content2),
         };
-        let diffs = diff_trees(&[&tree1, &tree2]);
+        let diffs = diff_trees(&[&tree1, &tree2], DiffMode::Output);
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].rel_path, "./dir/nested.txt");
         assert_eq!(diffs[0].diff, DiffType::CONTENT);
@@ -470,7 +493,7 @@ mod tests {
         let tree3 = MockTree {
             root: create_root(vec![]),
         };
-        let diffs = diff_trees(&[&tree1, &tree2, &tree3]);
+        let diffs = diff_trees(&[&tree1, &tree2, &tree3], DiffMode::Output);
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::TYPE | DiffType::CONTENT);

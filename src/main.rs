@@ -2,12 +2,15 @@
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser as _;
 use prost_types::Timestamp;
+use regex::Regex;
 
-use crate::config::Config;
+use crate::config::{Config, FileMatcher};
+use crate::diff::DiffMode;
 use crate::generic::fs::{MessageExt as _, PathExt as _};
 use crate::generic::libc::reset_sigpipe;
 use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
@@ -154,6 +157,11 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
     }
 
     match run_mode {
+        RunMode::Status => {
+            let task_tracker = task_tracker_main.tracker();
+            task_tracker_main
+                .spawn(async move { diff_main(task_tracker, arg, DiffMode::Status).await })?;
+        }
         RunMode::RefreshMetadataSnap => {
             let task_tracker = task_tracker_main.tracker();
             task_tracker_main
@@ -167,22 +175,101 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
     task_tracker_main.wait().await
 }
 
-#[allow(clippy::unused_async)]
+async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> TrackedTaskResult {
+    anyhow::ensure!(
+        arg.dirs.len() >= 2,
+        "Diff mode: expects at least 2 directories"
+    );
+
+    // spawn all trees
+    let mut ctx = RunContext::new(&task_tracker, &arg)?;
+    // wait for tree walk completion
+    for tree in &mut ctx.trees {
+        tree.wait_for_tree().await?;
+    }
+
+    // perform diff
+    let diffs = crate::diff::diff_trees(&ctx.trees, mode);
+
+    match mode {
+        DiffMode::Status => {
+            if diffs.is_empty() {
+                Ok(TaskExit::MainTaskStopAppSuccess)
+            } else {
+                Ok(TaskExit::MainTaskStopAppFailure(ExitCode::FAILURE))
+            }
+        }
+        DiffMode::Output => {
+            for diff in diffs {
+                println!("{diff}"); // TODO: manage println! error
+            }
+            Ok(TaskExit::MainTaskStopAppSuccess)
+        }
+    }
+}
+
 async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
     anyhow::ensure!(
         arg.dirs.len() == 1,
         "RefreshMetadataSnap mode: expects a single directory"
     );
-    let dir = canonicalize(&arg.dirs[0])?;
 
-    let config = Arc::new(Config::from_file(None)?);
-    let file_matcher = config.get_file_matcher(arg.profile.as_deref())?;
-    let ts = Timestamp::now();
-
-    let mut tree = TreeLocal::spawn(config, &task_tracker, &dir, ts, file_matcher)?;
-    tree.wait_for_tree().await?;
+    let mut ctx = RunContext::new(&task_tracker, &arg)?;
+    ctx.trees[0].wait_for_tree().await?;
 
     Ok(TaskExit::MainTaskStopAppSuccess)
+}
+
+/// Runtime context
+struct RunContext {
+    /// Configuration
+    config: Arc<Config>,
+    /// File Matcher for selected profile
+    file_matcher: Option<FileMatcher>,
+    /// Timestamp of the snapshot
+    ts: Timestamp,
+    /// Trees to compare
+    trees: Vec<Box<dyn Tree + Send>>,
+}
+
+impl RunContext {
+    fn new(task_tracker: &TaskTracker, arg: &Arg) -> anyhow::Result<Self> {
+        let config = Arc::new(Config::from_file(None)?);
+        let file_matcher = config.get_file_matcher(arg.profile.as_deref())?;
+        let ts = Timestamp::now();
+
+        let mut instance = Self {
+            config,
+            file_matcher,
+            ts,
+            trees: Vec::with_capacity(arg.dirs.len()),
+        };
+        for dir in &arg.dirs {
+            instance.spawn_tree(task_tracker, dir)?;
+        }
+        Ok(instance)
+    }
+
+    fn spawn_tree(&mut self, task_tracker: &TaskTracker, dir: &str) -> anyhow::Result<()> {
+        use std::sync::LazyLock;
+        static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+):(.+)$").unwrap());
+        if let Some(_captures) = RE.captures(dir) {
+            // remote tree
+            todo!();
+        } else {
+            // local tree
+            let dir = canonicalize(dir)?;
+            let tree = Box::new(TreeLocal::spawn(
+                self.config.clone(),
+                task_tracker,
+                &dir,
+                self.ts,
+                self.file_matcher.clone(),
+            )?);
+            self.trees.push(tree);
+        }
+        Ok(())
+    }
 }
 
 fn canonicalize(p: &str) -> anyhow::Result<String> {
