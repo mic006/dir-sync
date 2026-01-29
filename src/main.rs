@@ -1,6 +1,7 @@
 //! dir-sync entry point
 
 use std::fs::File;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -162,6 +163,11 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
             task_tracker_main
                 .spawn(async move { diff_main(task_tracker, arg, DiffMode::Status).await })?;
         }
+        RunMode::Output => {
+            let task_tracker = task_tracker_main.tracker();
+            task_tracker_main
+                .spawn(async move { diff_main(task_tracker, arg, DiffMode::Output).await })?;
+        }
         RunMode::RefreshMetadataSnap => {
             let task_tracker = task_tracker_main.tracker();
             task_tracker_main
@@ -201,7 +207,10 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
         }
         DiffMode::Output => {
             for diff in diffs {
-                println!("{diff}"); // TODO: manage println! error
+                if writeln!(std::io::stdout(), "{diff}").is_err() {
+                    // stdout has been closed, stop
+                    break;
+                }
             }
             Ok(TaskExit::MainTaskStopAppSuccess)
         }
