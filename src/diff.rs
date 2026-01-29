@@ -168,7 +168,7 @@ pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Ve
             }
 
             let file_name = file_name.unwrap();
-            let entry_rel_path = rel_path.clone() + "/" + file_name;
+            let entry_rel_path = format!("{rel_path}/{file_name}");
 
             if is_dir {
                 // inspect sub-directories

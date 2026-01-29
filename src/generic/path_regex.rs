@@ -76,7 +76,17 @@ fn gen_name_pattern(pattern: &str) -> String {
 ///
 /// "*" represents any number of characters excluding "/"
 fn gen_path_pattern(pattern: &str) -> String {
-    regex::escape(pattern).replace("\\*", "[^/]*")
+    regex::escape(&add_rel_path_prefix(pattern)).replace("\\*", "[^/]*")
+}
+
+/// Add "./" ahead of prefix if not already present
+#[must_use]
+pub fn add_rel_path_prefix(pattern: &str) -> String {
+    if pattern.starts_with("./") {
+        pattern.to_string()
+    } else {
+        format!("./{pattern}")
+    }
 }
 
 #[cfg(test)]
@@ -114,16 +124,16 @@ mod tests {
     #[test]
     fn test_gen_path_regex() {
         let mut builder = PathRegexBuilder::new_path();
-        for pattern in ["*/bar", "foo/$baz/*/*.gz"] {
+        for pattern in ["*/bar", "./foo/$baz/*/*.gz"] {
             builder.add_pattern(pattern);
         }
         let re = builder.finalize().unwrap().unwrap();
 
-        assert!(re.is_match("xxx/bar"));
-        assert!(!re.is_match("bar"));
-        assert!(!re.is_match("xxx/yyy/bar"));
-        assert!(re.is_match("foo/$baz/toto/xxx.gz"));
-        assert!(!re.is_match("foo/$baz/toto/xxx.gz.bak"));
-        assert!(!re.is_match("foo/baz/toto/xxx.gz"));
+        assert!(re.is_match("./xxx/bar"));
+        assert!(!re.is_match("./bar"));
+        assert!(!re.is_match("./xxx/yyy/bar"));
+        assert!(re.is_match("./foo/$baz/toto/xxx.gz"));
+        assert!(!re.is_match("./foo/$baz/toto/xxx.gz.bak"));
+        assert!(!re.is_match("./foo/baz/toto/xxx.gz"));
     }
 }

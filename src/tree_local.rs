@@ -110,7 +110,7 @@ impl TreeLocal {
 
             for e in entries.iter().rev() {
                 if e.is_dir() {
-                    dir_stack.push(rel_path.clone() + "/" + &e.file_name);
+                    dir_stack.push(format!("{rel_path}/{}", e.file_name));
                 }
             }
             sender_content.send(DirContent { rel_path, entries })?;
@@ -163,7 +163,7 @@ impl TreeLocal {
                         }
                     });
 
-                    let rel_path = input.rel_path.clone() + "/" + &f.file_name;
+                    let rel_path = format!("{}/{}", input.rel_path, f.file_name);
                     if let Some(prev_file_hash) = prev_file_hash {
                         // steal hash from prev_snap, will not be reused anyway
                         log::debug!("hash[{fs_tree}]: reusing hash of {rel_path}",);

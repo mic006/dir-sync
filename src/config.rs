@@ -7,8 +7,7 @@ use std::str::FromStr;
 use anyhow::Context as _;
 use serde::Deserialize;
 
-use crate::generic::fs::PathExt as _;
-use crate::generic::path_regex::PathRegexBuilder;
+use crate::generic::path_regex::{self, PathRegexBuilder};
 
 /// Default configuration path
 pub const DEFAULT_CFG_PATH: &str = "/data/develop/github/dir-sync/etc/dir-sync.conf.yaml"; // TODO: "/etc/dir-sync.conf.yaml";
@@ -80,9 +79,14 @@ impl Config {
                 ignore_name_regex_builder.add_pattern(p);
             }
             for p in &prof_data.ignore_path {
-                ignore_path_regex_builder.add_pattern(p.checked_as_str()?);
+                ignore_path_regex_builder.add_pattern(p);
             }
-            white_list.extend_from_slice(&prof_data.white_list);
+            white_list.extend(
+                prof_data
+                    .white_list
+                    .iter()
+                    .map(|pattern| path_regex::add_rel_path_prefix(pattern)),
+            );
         }
 
         Ok(Some(FileMatcher {
@@ -140,10 +144,10 @@ struct Profile {
     /// Relative paths to be ignored
     /// "*" represents any number of characters excluding "/"
     #[serde(default)]
-    ignore_path: Vec<PathBuf>,
+    ignore_path: Vec<String>,
     /// Relative paths to be considered, even if a parent folder is ignored
     #[serde(default)]
-    white_list: Vec<PathBuf>,
+    white_list: Vec<String>,
 }
 
 /// Determine name/paths to be ignored
@@ -154,11 +158,11 @@ pub struct FileMatcher {
     /// Relative paths to be ignored
     ignore_path_regex: Option<regex::Regex>,
     /// Relative paths to be considered, even if a parent folder is ignored
-    white_list: Vec<PathBuf>,
+    white_list: Vec<String>,
 }
 impl FileMatcher {
     #[must_use]
-    pub fn is_ignored(&self, rel_path: &Path) -> bool {
+    pub fn is_ignored(&self, rel_path: &str) -> bool {
         // white list: any path needed to access a considered entry
         if self
             .white_list
@@ -168,14 +172,14 @@ impl FileMatcher {
             return false;
         }
         // ignore based on name or path
-        let name = rel_path.file_name().unwrap().to_str().unwrap();
+        let name = Path::new(rel_path).file_name().unwrap().to_str().unwrap();
         self.ignore_name_regex
             .as_ref()
             .is_some_and(|r| r.is_match(name))
             || self
                 .ignore_path_regex
                 .as_ref()
-                .is_some_and(|r| r.is_match(rel_path.checked_as_str().unwrap()))
+                .is_some_and(|r| r.is_match(rel_path))
     }
 }
 
@@ -216,8 +220,8 @@ pub mod tests {
                     Profile {
                         include: ZeroOrOneOrList::One(String::from("default")),
                         ignore_name: vec![],
-                        ignore_path: vec![PathBuf::from("*/bar")],
-                        white_list: vec![PathBuf::from("folder/foo~/toto.bak")],
+                        ignore_path: vec![String::from("*/bar")],
+                        white_list: vec![String::from("folder/foo~/toto.bak")],
                     },
                 ),
             ]),
@@ -234,13 +238,13 @@ pub mod tests {
 
         let file_matcher = cfg.get_file_matcher(Some("data")).unwrap().unwrap();
 
-        assert!(file_matcher.is_ignored(Path::new("toto.bak")));
-        assert!(!file_matcher.is_ignored(Path::new("bar")));
-        assert!(file_matcher.is_ignored(Path::new("foo/bar")));
-        assert!(!file_matcher.is_ignored(Path::new("foo/sub/bar")));
-        assert!(file_matcher.is_ignored(Path::new("folder/baz~")));
-        assert!(!file_matcher.is_ignored(Path::new("folder/foo~")));
-        assert!(!file_matcher.is_ignored(Path::new("folder/foo~/toto.bak")));
-        assert!(file_matcher.is_ignored(Path::new("folder/foo~/titi.bak")));
+        assert!(file_matcher.is_ignored("./toto.bak"));
+        assert!(!file_matcher.is_ignored("./bar"));
+        assert!(file_matcher.is_ignored("./foo/bar"));
+        assert!(!file_matcher.is_ignored("./foo/sub/bar"));
+        assert!(file_matcher.is_ignored("./folder/baz~"));
+        assert!(!file_matcher.is_ignored("./folder/foo~"));
+        assert!(!file_matcher.is_ignored("./folder/foo~/toto.bak"));
+        assert!(file_matcher.is_ignored("./folder/foo~/titi.bak"));
     }
 }

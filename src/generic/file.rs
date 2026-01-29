@@ -5,7 +5,6 @@
 use std::ffi::CString;
 use std::fs::File;
 use std::os::fd::{FromRawFd as _, IntoRawFd as _, RawFd};
-use std::path::Path;
 
 use blake3::Hasher;
 use prost_types::Timestamp;
@@ -57,7 +56,7 @@ impl FsTree {
     /// - Returns error if the directory cannot be read
     pub fn walk_dir<F>(&self, rel_path: &str, mut ignore: F) -> anyhow::Result<Vec<MyDirEntry>>
     where
-        F: FnMut(&Path) -> bool,
+        F: FnMut(&str) -> bool,
     {
         unsafe {
             let c_rel_path = CString::new(rel_path)?;
@@ -75,7 +74,6 @@ impl FsTree {
             let mut dirp = ScopedDirp::fdopendir(dir_fd)?;
 
             let mut entries = Vec::new();
-            let p_rel_path = Path::new(rel_path);
             while let entry = dirp.readdir()
                 && !entry.is_null()
             {
@@ -85,7 +83,7 @@ impl FsTree {
                 if name == "." || name == ".." {
                     continue;
                 }
-                if ignore(&p_rel_path.join(&*name)) {
+                if ignore(format!("{rel_path}/{name}").as_str()) {
                     continue;
                 }
                 let my_dir_entry = Self::statat(dir_fd, &name)?;
@@ -1294,8 +1292,7 @@ mod tests {
         fs_tree.symlink("link_to_file.txt", "regular_file.txt")?;
 
         // Walk the directory with an ignore filter that ignores symlinks
-        let entries =
-            fs_tree.walk_dir(".", |path| path.to_string_lossy().contains("link_to_file"))?;
+        let entries = fs_tree.walk_dir(".", |path| path.contains("link_to_file"))?;
 
         // Verify we have 2 entries (subdir and regular_file.txt, but not the symlink)
         assert_eq!(
