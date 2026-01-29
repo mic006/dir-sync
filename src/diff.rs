@@ -1,9 +1,7 @@
 //! Compare tree and determine delta
 
-use crate::{
-    proto::{MyDirEntry, MyDirEntryExt},
-    tree::TreeMetadata,
-};
+use crate::proto::{MyDirEntry, MyDirEntryExt, Specific};
+use crate::tree::TreeMetadata;
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq)]
@@ -15,6 +13,7 @@ bitflags::bitflags! {
         const CONTENT     = 1 << 1;
         const PERMISSIONS = 1 << 2;
         const UID_GID     = 1 << 3;
+        /// modification time; only for regular files and symlinks
         const MTIME       = 1 << 4;
     }
 }
@@ -39,27 +38,38 @@ impl std::fmt::Display for DiffType {
 }
 
 /// Compare 2 entries and determine difference
+///
+/// mtime is compared only for regular files and symlinks
 fn diff_entries(a: &MyDirEntry, b: &MyDirEntry) -> DiffType {
     let mut diff = DiffType::empty();
+    let mut check_mtime = false;
 
     // type and content check
+    #[allow(clippy::match_same_arms)]
     match (a.specific.as_ref().unwrap(), b.specific.as_ref().unwrap()) {
-        (crate::proto::Specific::Directory(_), crate::proto::Specific::Directory(_)) => (),
-        (
-            crate::proto::Specific::Regular(regular_data_a),
-            crate::proto::Specific::Regular(regular_data_b),
-        ) => {
+        (Specific::Fifo(_), Specific::Fifo(_)) => (),
+        (Specific::Character(dev_a), Specific::Character(dev_b))
+        | (Specific::Block(dev_a), Specific::Block(dev_b)) => {
+            if dev_a != dev_b {
+                diff.insert(DiffType::CONTENT);
+            }
+        }
+        (Specific::Directory(_), Specific::Directory(_)) => (),
+        (Specific::Regular(regular_data_a), Specific::Regular(regular_data_b)) => {
             if regular_data_a.size != regular_data_b.size
                 || regular_data_a.hash != regular_data_b.hash
             {
                 diff.insert(DiffType::CONTENT);
             }
+            check_mtime = true;
         }
-        (crate::proto::Specific::Symlink(target_a), crate::proto::Specific::Symlink(target_b)) => {
+        (Specific::Symlink(target_a), Specific::Symlink(target_b)) => {
             if target_a != target_b {
                 diff.insert(DiffType::CONTENT);
             }
+            check_mtime = true;
         }
+        (Specific::Socket(_), Specific::Socket(_)) => (),
         _ => diff.insert(DiffType::TYPE),
     }
 
@@ -69,7 +79,7 @@ fn diff_entries(a: &MyDirEntry, b: &MyDirEntry) -> DiffType {
     if a.uid != b.uid || a.gid != b.gid {
         diff.insert(DiffType::UID_GID);
     }
-    if a.mtime != b.mtime {
+    if check_mtime && a.mtime != b.mtime {
         diff.insert(DiffType::MTIME);
     }
 

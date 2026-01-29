@@ -149,7 +149,10 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
     if let Some(log_file) = &arg.log {
         let mut logger =
             env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"));
-        logger.format_source_path(true).format_target(false);
+        logger
+            .format_source_path(true)
+            .format_target(false)
+            .format_timestamp_millis();
         if log_file != Path::new("stderr") {
             let target = Box::new(File::create(log_file).expect("Can't create log file"));
             logger.target(env_logger::Target::Pipe(target));
