@@ -18,6 +18,25 @@ bitflags::bitflags! {
         const MTIME       = 1 << 4;
     }
 }
+impl std::fmt::Display for DiffType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const ELEMS: [(DiffType, char); 5] = [
+            (DiffType::TYPE, 't'),
+            (DiffType::CONTENT, 'c'),
+            (DiffType::PERMISSIONS, 'p'),
+            (DiffType::UID_GID, 'o'),
+            (DiffType::MTIME, 'm'),
+        ];
+        for (d, c) in ELEMS {
+            if self.contains(d) {
+                write!(f, "{c}")?;
+            } else {
+                write!(f, "-")?;
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Compare 2 entries and determine difference
 fn diff_entries(a: &MyDirEntry, b: &MyDirEntry) -> DiffType {
@@ -67,6 +86,11 @@ pub struct DiffEntry {
     /// type of difference
     diff: DiffType,
 }
+impl std::fmt::Display for DiffEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}  {}", self.diff, self.rel_path)
+    }
+}
 
 /// Compare multiple trees and determine differences
 pub fn diff_trees(trees: &[&dyn TreeMetadata]) -> Vec<DiffEntry> {
@@ -79,7 +103,7 @@ pub fn diff_trees(trees: &[&dyn TreeMetadata]) -> Vec<DiffEntry> {
     let mut indexes = vec![0_usize; trees.len()];
 
     while let Some(rel_path) = dir_stack.pop() {
-        log::debug!("diff: entering {rel_path}");
+        log::debug!("[diff]: entering {rel_path}");
 
         // init
         for i in 0..trees.len() {
@@ -146,7 +170,7 @@ pub fn diff_trees(trees: &[&dyn TreeMetadata]) -> Vec<DiffEntry> {
                 }
             }
             if !diff.is_empty() {
-                diffs.push(DiffEntry {
+                let diff_entry = DiffEntry {
                     rel_path: entry_rel_path,
                     entries: (0..trees.len())
                         .map(|i| {
@@ -158,7 +182,9 @@ pub fn diff_trees(trees: &[&dyn TreeMetadata]) -> Vec<DiffEntry> {
                         })
                         .collect(),
                     diff,
-                });
+                };
+                log::debug!("[diff]: {diff_entry}");
+                diffs.push(diff_entry);
             }
 
             // increment indexes for consumed entry
@@ -175,7 +201,7 @@ pub fn diff_trees(trees: &[&dyn TreeMetadata]) -> Vec<DiffEntry> {
         }
     }
 
-    log::debug!("diff completed");
+    log::debug!("[diff]: completed");
     diffs
 }
 
@@ -334,6 +360,8 @@ mod tests {
 
     #[test]
     fn test_diff_trees_identical() {
+        crate::generic::test::log_init();
+
         let content = vec![create_file_entry("file.txt", 10, 100)];
         let tree1 = MockTree {
             root: create_root(content.clone()),
@@ -347,6 +375,8 @@ mod tests {
 
     #[test]
     fn test_diff_trees_added_file() {
+        crate::generic::test::log_init();
+
         let tree1 = MockTree {
             root: create_root(vec![]),
         };
@@ -364,6 +394,8 @@ mod tests {
 
     #[test]
     fn test_diff_trees_removed_file() {
+        crate::generic::test::log_init();
+
         let content1 = vec![create_file_entry("file.txt", 10, 100)];
         let tree1 = MockTree {
             root: create_root(content1),
@@ -381,6 +413,8 @@ mod tests {
 
     #[test]
     fn test_diff_trees_modified_file() {
+        crate::generic::test::log_init();
+
         let content1 = vec![create_file_entry("file.txt", 10, 100)];
         let tree1 = MockTree {
             root: create_root(content1),
@@ -399,6 +433,8 @@ mod tests {
 
     #[test]
     fn test_diff_trees_nested() {
+        crate::generic::test::log_init();
+
         let content1 = vec![create_dir_entry(
             "dir",
             vec![create_file_entry("nested.txt", 10, 100)],
@@ -421,6 +457,8 @@ mod tests {
 
     #[test]
     fn test_diff_trees_three_way() {
+        crate::generic::test::log_init();
+
         let content1 = vec![create_file_entry("file.txt", 10, 100)];
         let tree1 = MockTree {
             root: create_root(content1),
