@@ -117,6 +117,7 @@ pub enum DiffMode {
 /// - [first diff]: when mode == Status, report only the first difference found
 /// - [all diffs]: when mode == Output, report all differences found
 pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Vec<DiffEntry> {
+    log::info!("[diff]: starting");
     let all_trees: u32 = (1 << trees.len()) - 1;
     let mut dir_stack = vec![String::from(".")];
     let mut dir_tmp_stack = vec![];
@@ -228,7 +229,7 @@ pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Ve
         }
     }
 
-    log::debug!("[diff]: completed");
+    log::info!("[diff]: completed");
     diffs
 }
 

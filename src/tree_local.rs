@@ -93,6 +93,7 @@ impl TreeLocal {
         sender_content: Sender<DirContent>,
         file_matcher: Option<FileMatcher>,
     ) -> anyhow::Result<TaskExit> {
+        log::info!("walk[{fs_tree}]: starting");
         let mut dir_stack = vec![String::from(".")];
 
         while let Some(rel_path) = dir_stack.pop() {
@@ -115,7 +116,7 @@ impl TreeLocal {
             }
             sender_content.send(DirContent { rel_path, entries })?;
         }
-        log::debug!("walk[{fs_tree}]: completed");
+        log::info!("walk[{fs_tree}]: completed");
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 
@@ -127,6 +128,7 @@ impl TreeLocal {
         receiver_content: Receiver<DirContent>,
         sender_snap: Sender<MyDirEntry>,
     ) -> anyhow::Result<TaskExit> {
+        log::info!("hash[{fs_tree}]: starting");
         let mut prev_snap = MetadataSnap::load_from_file(metadata_path).ok();
         let mut snap = fs_tree.stat(".")?;
 
@@ -181,13 +183,12 @@ impl TreeLocal {
             snap.insert(&input.rel_path, input.entries)?;
         }
 
-        log::debug!("hash[{fs_tree}]: completed");
+        log::info!("hash[{fs_tree}]: completed");
         sender_snap.send(snap)?;
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 }
 
-// TODO: impl or Deref ?
 impl TreeMetadata for TreeLocal {
     fn get_entry(&self, rel_path: &str) -> Option<&MyDirEntry> {
         let LocalMetadataState::Received(snap) = &self.metadata_state else {

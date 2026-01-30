@@ -50,6 +50,9 @@ struct Arg {
     /// Log target: stderr or file location
     #[arg(short, long)]
     log: Option<PathBuf>,
+    /// Enable debug output
+    #[arg(short, long)]
+    debug: bool,
     /// Directories to compare
     #[arg(required = true)]
     dirs: Vec<String>,
@@ -148,8 +151,9 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
     task_tracker_main.setup_signal_catching()?;
 
     if let Some(log_file) = &arg.log {
-        let mut logger =
-            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"));
+        let mut logger = env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or(if arg.debug { "debug" } else { "info" }),
+        );
         logger
             .format_source_path(true)
             .format_target(false)
