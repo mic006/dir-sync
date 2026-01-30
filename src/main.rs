@@ -26,6 +26,7 @@ pub mod generic {
     pub mod fs;
     pub mod libc;
     pub mod path_regex;
+    pub mod prost_stream;
     pub mod task_tracker;
     pub mod test;
 }
