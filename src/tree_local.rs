@@ -28,64 +28,42 @@ enum LocalMetadataState {
     Terminated,
 }
 
-/// Context shared by all nodes
-struct NodeSharedCtx {
+/// Context for walking the tree
+struct WalkCtx {
     fs_tree: Arc<FsTree>,
     file_matcher: Option<FileMatcher>,
-    // TODO: add task_tracker to allow early exit
+    task_tracker: TaskTracker,
 }
 
-fn recursive_walk(
-    ctx: &Arc<NodeSharedCtx>,
-    rel_path: String,
-    mut prev_snap: Option<MyDirEntry>,
-) -> anyhow::Result<Vec<MyDirEntry>> {
-    // get directory content, filtering out ignored files
-    let mut entries = ctx.fs_tree.walk_dir(&rel_path, |p| {
-        if let Some(fm) = &ctx.file_matcher {
-            fm.is_ignored(p)
-        } else {
-            false
-        }
-    })?;
-    entries.sort_by(MyDirEntry::cmp);
+impl WalkCtx {
+    /// Walk tree recursively
+    fn recursive_walk(
+        &self,
+        rel_path: String,
+        current_entry: &mut MyDirEntry,
+        mut prev_snap: Option<MyDirEntry>,
+    ) -> anyhow::Result<()> {
+        self.task_tracker.get_shutdown_req_as_result()?;
+        log::debug!("walk[{}]: entering directory {rel_path}", self.fs_tree);
 
-    // serialized: get sub directories and their associated previous snapshot, if any
-    let subdirs = entries
-        .iter_mut()
-        .filter_map(|e| {
+        let mut entries = self.fs_tree.walk_dir(&rel_path, |p| self.ignore(p))?;
+        entries.sort_by(MyDirEntry::cmp);
+
+        let mut subdirs = Vec::with_capacity(entries.len());
+        let mut files_to_hash = Vec::with_capacity(entries.len());
+
+        // process all entries
+        // - determine sub directories to be walked recursively, collected in subdirs
+        // - handle regular files hash
+        //   - reuse hash from prev_snap if available and matching
+        //   - collect remaining files in files_to_hash
+        for e in &mut entries {
             if e.is_dir() {
                 let prev_snap_subdir = prev_snap
                     .as_ref()
                     .and_then(|prev_snap| prev_snap.get_entry(&e.file_name).cloned()); //TODO: take instead of clone
-                Some((e, prev_snap_subdir))
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-
-    // parallelized: get and update sub directories content recursively
-    subdirs.into_par_iter().try_for_each_with(
-        ctx.clone(),
-        |ctx, (e, prev_snap)| -> anyhow::Result<()> {
-            if e.is_dir() {
-                let entries =
-                    recursive_walk(ctx, format!("{rel_path}/{}", e.file_name), prev_snap)?;
-                e.specific = Some(Specific::Directory(crate::proto::DirectoryData {
-                    content: entries,
-                }));
-            }
-            Ok(())
-        },
-    )?;
-
-    // serialized: update file hash from previous snapshot, if any
-    // return the files to be hashed
-    let files_to_hash = entries
-        .iter_mut()
-        .filter_map(|e| {
-            if let Some(Specific::Regular(file_data)) = &mut e.specific
+                subdirs.push((e, prev_snap_subdir));
+            } else if let Some(Specific::Regular(file_data)) = &mut e.specific
                 && file_data.size != 0
             {
                 /* try to get hash from prev_snap_dir
@@ -109,45 +87,47 @@ fn recursive_walk(
                 });
                 if let Some(prev_file_hash) = prev_file_hash {
                     // steal hash from prev_snap, will not be reused anyway
-                    log::debug!("hash[{}]: reusing hash of {rel_path}", ctx.fs_tree);
+                    log::debug!("walk[{}]: reusing hash of {rel_path}", self.fs_tree);
                     file_data.hash = std::mem::take(prev_file_hash);
                     // hash retrieved from previous snapshot, skip
-                    None
                 } else {
-                    // compute hash
-                    Some(e)
+                    // need to compute hash
+                    files_to_hash.push((format!("{rel_path}/{}", e.file_name), file_data));
                 }
-            } else {
-                // not a regular file or empty file, skip
-                None
             }
-        })
-        .collect::<Vec<_>>();
+        }
 
-    // parallelized: compute hash of files
-    files_to_hash.into_par_iter().try_for_each_with(
-        ctx.clone(),
-        |ctx, e| -> anyhow::Result<()> {
-            let rel_path = format!("{rel_path}/{}", e.file_name);
-            log::debug!("hash[{}]: compute hash of {rel_path}", ctx.fs_tree);
-            let Some(Specific::Regular(file_data)) = &mut e.specific else {
-                unreachable!("working only on regular files")
-            };
-            let f = ctx.fs_tree.open(&rel_path)?;
-            file_data.hash = f.compute_hash()?.as_bytes().into();
-            Ok(())
-        },
-    )?;
+        // parallelized: process sub directories recursively
+        subdirs
+            .into_par_iter()
+            .try_for_each(|(e, prev_snap)| -> anyhow::Result<()> {
+                self.recursive_walk(format!("{rel_path}/{}", e.file_name), e, prev_snap)
+            })?;
 
-    Ok(entries)
-}
+        // parallelized: compute hash of files
+        files_to_hash.into_par_iter().try_for_each(
+            |(rel_path, file_data)| -> anyhow::Result<()> {
+                log::debug!("walk[{}]: compute hash of {rel_path}", self.fs_tree);
+                let f = self.fs_tree.open(&rel_path)?;
+                file_data.hash = f.compute_hash()?.as_bytes().into();
+                Ok(())
+            },
+        )?;
 
-/// Content of one directory
-struct DirContent {
-    /// relative path of directory to root directory, "." if root
-    pub rel_path: String,
-    /// directory content, unsorted
-    pub entries: Vec<MyDirEntry>,
+        // update directory content
+        current_entry.specific = Some(Specific::Directory(DirectoryData { content: entries }));
+
+        Ok(())
+    }
+
+    /// Indicate if relative path shall be ignored during walking
+    fn ignore(&self, rel_path: &str) -> bool {
+        if let Some(fm) = &self.file_matcher {
+            fm.is_ignored(rel_path)
+        } else {
+            false
+        }
+    }
 }
 
 /// Manage one `Tree` on the local machine
@@ -204,7 +184,7 @@ impl TreeLocal {
     /// Task to walk the tree
     /// 1st step
     fn walk_task(
-        _task_tracker: TaskTracker,
+        task_tracker: TaskTracker,
         fs_tree: Arc<FsTree>,
         file_matcher: Option<FileMatcher>,
         metadata_path: PathBuf,
@@ -216,13 +196,13 @@ impl TreeLocal {
 
         let mut snap = fs_tree.stat(".")?;
 
-        let ctx = Arc::new(NodeSharedCtx {
+        let ctx = WalkCtx {
             fs_tree: fs_tree.clone(),
             file_matcher,
-        });
+            task_tracker,
+        };
 
-        let entries = recursive_walk(&ctx, String::from("."), prev_snap)?;
-        snap.specific = Some(Specific::Directory(DirectoryData { content: entries }));
+        ctx.recursive_walk(String::from("."), &mut snap, prev_snap)?;
 
         log::info!("walk[{fs_tree}]: completed");
         sender_snap.send(snap)?;
