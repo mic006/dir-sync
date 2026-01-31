@@ -60,8 +60,8 @@ impl WalkCtx {
         for e in &mut entries {
             if e.is_dir() {
                 let prev_snap_subdir = prev_snap
-                    .as_ref()
-                    .and_then(|prev_snap| prev_snap.get_entry(&e.file_name).cloned()); //TODO: take instead of clone
+                    .as_mut()
+                    .and_then(|prev_snap| prev_snap.take_entry(&e.file_name));
                 subdirs.push((e, prev_snap_subdir));
             } else if let Some(Specific::Regular(file_data)) = &mut e.specific
                 && file_data.size != 0
@@ -182,7 +182,6 @@ impl TreeLocal {
     }
 
     /// Task to walk the tree
-    /// 1st step
     fn walk_task(
         task_tracker: TaskTracker,
         fs_tree: Arc<FsTree>,

@@ -49,14 +49,10 @@ where
     /// Get one entry in the tree
     fn get_entry_mut(&mut self, rel_path: &str) -> Option<&mut MyDirEntry>;
 
-    /// Insert content in the tree
-    fn insert(
-        &mut self,
-        // relative path of directory to root directory, "." if root
-        rel_path: &str,
-        // directory content, unsorted
-        entries: Vec<MyDirEntry>,
-    ) -> anyhow::Result<()>;
+    /// Take one entry from the tree
+    /// In the tree, the entry is kept (so name is still valid, allowing binary_search)
+    /// but specific field is taken
+    fn take_entry(&mut self, rel_path: &str) -> Option<MyDirEntry>;
 }
 
 impl MyDirEntryExt for MyDirEntry {
@@ -110,25 +106,13 @@ impl MyDirEntryExt for MyDirEntry {
         Some(entry)
     }
 
-    fn insert(&mut self, rel_path: &str, mut entries: Vec<MyDirEntry>) -> anyhow::Result<()> {
-        let dir = self.get_entry_mut(rel_path).ok_or_else(|| {
-            anyhow::anyhow!("inconsistent snapshot, directory '{rel_path}' not found",)
-        })?;
-
-        entries.sort_by(MyDirEntry::cmp);
-
-        let Some(Specific::Directory(dir_data)) = &mut dir.specific else {
-            anyhow::bail!(
-                "inconsistent snapshot, trying to insert entries in a non-directory entry"
-            );
-        };
-        anyhow::ensure!(
-            dir_data.content.is_empty(),
-            "inconsistent snapshot, trying to insert entries in a non-empty entry"
-        );
-        dir_data.content = entries;
-
-        Ok(())
+    fn take_entry(&mut self, rel_path: &str) -> Option<MyDirEntry> {
+        let src_entry = self.get_entry_mut(rel_path)?;
+        Some(MyDirEntry {
+            file_name: src_entry.file_name.clone(),
+            specific: src_entry.specific.take(),
+            ..*src_entry
+        })
     }
 }
 
