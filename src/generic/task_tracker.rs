@@ -119,6 +119,10 @@ pub struct TaskTrackerMain {
     task_handles_tx: Option<flume::Sender<TaskJoinHandle>>,
     /// Tracked tasks
     tasks: FuturesUnordered<TaskJoinHandle>,
+    /// Receive termination request
+    termination_rx: flume::Receiver<ExitCode>,
+    /// Send termination request
+    termination_tx: flume::Sender<ExitCode>,
     /// Flag used by synchronous / blocking tasks to detect an exit condition
     exit_requested: Arc<std::sync::atomic::AtomicBool>,
     /// State of the task tracker
@@ -134,11 +138,14 @@ impl Drop for TaskTrackerMain {
 }
 impl Default for TaskTrackerMain {
     fn default() -> Self {
-        let (tx, rx) = flume::unbounded();
+        let (task_handles_tx, task_handles_rx) = flume::unbounded();
+        let (termination_tx, termination_rx) = flume::unbounded();
         Self {
-            task_handles_rx: rx,
-            task_handles_tx: Some(tx),
+            task_handles_rx,
+            task_handles_tx: Some(task_handles_tx),
             tasks: FuturesUnordered::default(),
+            termination_rx,
+            termination_tx,
             exit_requested: Arc::default(),
             state: State::Running,
         }
@@ -220,6 +227,14 @@ impl TaskTrackerMain {
                         Err(_join_err) /* cancelled task */ => (),
                     }
                 },
+                Ok(exit_code) = self.termination_rx.recv_async() => {
+                    // termination requested
+                    if self.state.is_running() {
+                        // record first request and abort all tasks
+                        self.state = State::ExitFailure(exit_code);
+                        self.abort();
+                    }
+                }
             }
         }
         log::debug!("All tasks are terminated");
@@ -237,6 +252,7 @@ impl TaskTrackerMain {
     pub fn tracker(&self) -> TaskTracker {
         TaskTracker {
             task_handles_tx: self.task_handles_tx.as_ref().expect("safe").clone(),
+            termination_tx: self.termination_tx.clone(),
             exit_requested: self.exit_requested.clone(),
         }
     }
@@ -309,6 +325,7 @@ impl TaskTrackerMain {
 
     /// Abort all tasks
     fn abort(&self) {
+        log::info!("aborting");
         // inform sync tasks
         self.exit_requested
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -324,6 +341,8 @@ impl TaskTrackerMain {
 pub struct TaskTracker {
     /// Send join handles, needed to create `TaskTracker` instance
     task_handles_tx: flume::Sender<TaskJoinHandle>,
+    /// Send termination request
+    termination_tx: flume::Sender<ExitCode>,
     /// Flag used by synchronous / blocking tasks to detect an exit condition
     exit_requested: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -372,6 +391,11 @@ impl TaskTracker {
     {
         Ok(self.task_handles_tx.send(tokio::task::spawn_blocking(f))?)
     }
+
+    /// Terminate the application
+    pub fn terminate(&self, code: ExitCode) {
+        self.termination_tx.send(code).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -382,9 +406,11 @@ pub mod tests {
 
     #[must_use]
     pub fn dummy_task_tracker() -> TaskTracker {
-        let (tx, _rx) = flume::unbounded();
+        let (task_handles_tx, _task_handles_rx) = flume::unbounded();
+        let (termination_tx, _termination_rx) = flume::unbounded();
         TaskTracker {
-            task_handles_tx: tx,
+            task_handles_tx,
+            termination_tx,
             exit_requested: Arc::default(),
         }
     }

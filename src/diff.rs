@@ -1,8 +1,10 @@
 //! Compare tree and determine delta
 
+use std::process::ExitCode;
+
 use rayon::prelude::*;
 
-use crate::generic::task_tracker::TaskTracker;
+use crate::generic::task_tracker::{ShutdownReqError, TaskTracker};
 use crate::proto::{MyDirEntry, MyDirEntryExt, Specific};
 use crate::tree::TreeMetadata;
 
@@ -198,6 +200,12 @@ where
                 }
             }
             if !diff.is_empty() {
+                if self.mode == DiffMode::Status {
+                    log::debug!("diff: status mode, early exit");
+                    self.task_tracker.terminate(ExitCode::FAILURE);
+                    return Err(ShutdownReqError.into());
+                }
+
                 let diff_entry = DiffEntry {
                     rel_path: entry_rel_path,
                     entries: (0..nb_trees)
@@ -213,10 +221,6 @@ where
                 };
                 log::debug!("diff: {diff_entry}");
                 diffs.push(diff_entry);
-                if self.mode == DiffMode::Status {
-                    log::debug!("diff: status mode, early exit");
-                    return Ok(diffs);
-                }
             }
 
             // increment indexes for consumed entry
