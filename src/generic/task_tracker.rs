@@ -375,10 +375,19 @@ impl TaskTracker {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[must_use]
+    pub fn dummy_task_tracker() -> TaskTracker {
+        let (tx, _rx) = flume::unbounded();
+        TaskTracker {
+            task_handles_tx: tx,
+            exit_requested: Arc::default(),
+        }
+    }
 
     #[tokio::test]
     async fn shutdown_sync_and_async() -> anyhow::Result<()> {

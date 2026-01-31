@@ -203,7 +203,7 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
     }
 
     // perform diff
-    let diffs = crate::diff::diff_trees(&ctx.trees, mode);
+    let diffs = crate::diff::diff_trees(task_tracker, &ctx.trees, mode)?;
 
     match mode {
         DiffMode::Status => {
@@ -246,7 +246,7 @@ struct RunContext {
     /// Timestamp of the snapshot
     ts: Timestamp,
     /// Trees to compare
-    trees: Vec<Box<dyn Tree + Send>>,
+    trees: Vec<Box<dyn Tree + Send + Sync>>,
 }
 
 impl RunContext {

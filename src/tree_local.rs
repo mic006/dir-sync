@@ -37,14 +37,14 @@ struct WalkCtx {
 
 impl WalkCtx {
     /// Walk tree recursively
-    fn recursive_walk(
+    fn walk_recursive(
         &self,
         rel_path: String,
         current_entry: &mut MyDirEntry,
         mut prev_snap: Option<MyDirEntry>,
     ) -> anyhow::Result<()> {
         self.task_tracker.get_shutdown_req_as_result()?;
-        log::debug!("walk[{}]: entering directory {rel_path}", self.fs_tree);
+        log::debug!("walk[{}]: entering {rel_path}", self.fs_tree);
 
         let mut entries = self.fs_tree.walk_dir(&rel_path, |p| self.ignore(p))?;
         entries.sort_by(MyDirEntry::cmp);
@@ -101,12 +101,13 @@ impl WalkCtx {
         subdirs
             .into_par_iter()
             .try_for_each(|(e, prev_snap)| -> anyhow::Result<()> {
-                self.recursive_walk(format!("{rel_path}/{}", e.file_name), e, prev_snap)
+                self.walk_recursive(format!("{rel_path}/{}", e.file_name), e, prev_snap)
             })?;
 
         // parallelized: compute hash of files
         files_to_hash.into_par_iter().try_for_each(
             |(rel_path, file_data)| -> anyhow::Result<()> {
+                self.task_tracker.get_shutdown_req_as_result()?;
                 log::debug!("walk[{}]: compute hash of {rel_path}", self.fs_tree);
                 let f = self.fs_tree.open(&rel_path)?;
                 file_data.hash = f.compute_hash()?.as_bytes().into();
@@ -117,6 +118,7 @@ impl WalkCtx {
         // update directory content
         current_entry.specific = Some(Specific::Directory(DirectoryData { content: entries }));
 
+        log::debug!("walk[{}]: leaving {rel_path}", self.fs_tree);
         Ok(())
     }
 
@@ -201,7 +203,7 @@ impl TreeLocal {
             task_tracker,
         };
 
-        ctx.recursive_walk(String::from("."), &mut snap, prev_snap)?;
+        ctx.walk_recursive(String::from("."), &mut snap, prev_snap)?;
 
         log::info!("walk[{fs_tree}]: completed");
         sender_snap.send(snap)?;

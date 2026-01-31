@@ -29,7 +29,7 @@ pub trait Tree: TreeMetadata {
 /// Consider a `Box<dyn Tree>` as a ref to `TreeMetadata`
 ///
 /// Used to magically consider a `&Vec<Box<dyn Tree>>` as a `&[AsRef<dyn TreeMetadata>]` parameter
-impl AsRef<dyn TreeMetadata> for Box<dyn Tree + Send> {
+impl AsRef<dyn TreeMetadata> for Box<dyn Tree + Send + Sync> {
     fn as_ref(&self) -> &(dyn TreeMetadata + 'static) {
         &**self
     }

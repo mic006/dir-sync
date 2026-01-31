@@ -1,5 +1,8 @@
 //! Compare tree and determine delta
 
+use rayon::prelude::*;
+
+use crate::generic::task_tracker::TaskTracker;
 use crate::proto::{MyDirEntry, MyDirEntryExt, Specific};
 use crate::tree::TreeMetadata;
 
@@ -110,32 +113,33 @@ pub enum DiffMode {
     Status,
 }
 
-/// Compare multiple trees and determine differences
-///
-/// # Returns
-/// - []: all trees are similar, no difference found
-/// - [first diff]: when mode == Status, report only the first difference found
-/// - [all diffs]: when mode == Output, report all differences found
-pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Vec<DiffEntry> {
-    log::info!("[diff]: starting");
-    let all_trees: u32 = (1 << trees.len()) - 1;
-    let mut dir_stack = vec![String::from(".")];
-    let mut dir_tmp_stack = vec![];
-    let mut diffs = vec![];
+/// Context for performing diff of the trees
+struct DiffCtx<'a, T> {
+    task_tracker: TaskTracker,
+    trees: &'a [T],
+    mode: DiffMode,
+}
 
-    let mut dir_contents: Vec<&[MyDirEntry]> = vec![&[]; trees.len()];
-    let mut indexes = vec![0_usize; trees.len()];
+impl<T> DiffCtx<'_, T>
+where
+    T: AsRef<dyn TreeMetadata> + Sync,
+{
+    fn diff_recursive(&self, rel_path: String) -> anyhow::Result<Vec<DiffEntry>> {
+        self.task_tracker.get_shutdown_req_as_result()?;
+        log::debug!("diff: entering {rel_path}");
 
-    while let Some(rel_path) = dir_stack.pop() {
-        log::debug!("[diff]: entering {rel_path}");
+        let nb_trees = self.trees.len();
+        let all_trees: u32 = (1 << nb_trees) - 1;
+        let mut diffs = vec![];
+        let mut subdirs = vec![];
 
-        // init
-        for i in 0..trees.len() {
-            // reset indexes
-            indexes[i] = 0;
-            // get content
-            dir_contents[i] = trees[i].as_ref().get_dir_content(&rel_path);
-        }
+        let dir_contents = self
+            .trees
+            .iter()
+            .map(|t| t.as_ref().get_dir_content(&rel_path))
+            .collect::<Vec<_>>();
+
+        let mut indexes = vec![0_usize; nb_trees];
 
         // identify diffs
         loop {
@@ -143,7 +147,7 @@ pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Ve
             let mut file_name: Option<&str> = None;
             let mut involved_trees = 0u32;
             let mut is_dir = false;
-            for i in 0..trees.len() {
+            for i in 0..nb_trees {
                 let e = dir_contents[i].get(indexes[i]);
                 if let Some(e) = e {
                     if let Some(name) = &file_name {
@@ -173,7 +177,7 @@ pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Ve
 
             if is_dir {
                 // inspect sub-directories
-                dir_tmp_stack.push(entry_rel_path.clone());
+                subdirs.push(entry_rel_path.clone());
             }
 
             // identify the diff
@@ -186,7 +190,7 @@ pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Ve
                 // compare other entries against the first one
                 let first_idx = involved_trees.trailing_zeros() as usize;
                 let first_entry = dir_contents[first_idx].get(indexes[first_idx]).unwrap();
-                for i in (first_idx + 1)..trees.len() {
+                for i in (first_idx + 1)..nb_trees {
                     if (1 << i) & involved_trees != 0 {
                         let entry = dir_contents[i].get(indexes[i]).unwrap();
                         diff |= diff_entries(first_entry, entry);
@@ -196,7 +200,7 @@ pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Ve
             if !diff.is_empty() {
                 let diff_entry = DiffEntry {
                     rel_path: entry_rel_path,
-                    entries: (0..trees.len())
+                    entries: (0..nb_trees)
                         .map(|i| {
                             if (1 << i) & involved_trees != 0 {
                                 Some(dir_contents[i].get(indexes[i]).unwrap().clone())
@@ -207,11 +211,11 @@ pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Ve
                         .collect(),
                     diff,
                 };
-                log::debug!("[diff]: {diff_entry}");
+                log::debug!("diff: {diff_entry}");
                 diffs.push(diff_entry);
-                if mode == DiffMode::Status {
-                    log::debug!("[diff]: status mode, early exit");
-                    return diffs;
+                if self.mode == DiffMode::Status {
+                    log::debug!("diff: status mode, early exit");
+                    return Ok(diffs);
                 }
             }
 
@@ -223,19 +227,57 @@ pub fn diff_trees<T: AsRef<dyn TreeMetadata>>(trees: &[T], mode: DiffMode) -> Ve
             }
         }
 
-        // sub directories to be inspected next
-        for dir in dir_tmp_stack.drain(..).rev() {
-            dir_stack.push(dir);
-        }
-    }
+        // parallelized: process sub directories recursively
+        let subdirs_diffs = subdirs
+            .into_par_iter()
+            .map(|dir| self.diff_recursive(dir))
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
-    log::info!("[diff]: completed");
-    diffs
+        // merge results
+        let diffs = diffs
+            .into_iter()
+            .chain(subdirs_diffs.into_iter().flatten())
+            .collect::<Vec<_>>();
+
+        log::debug!("diff: leaving {rel_path}");
+        Ok(diffs)
+    }
+}
+
+/// Compare multiple trees and determine differences
+///
+/// # Returns
+/// - []: all trees are similar, no difference found
+/// - [first diff]: when mode == Status, report only the first difference found
+/// - [all diffs]: when mode == Output, report all differences found
+///
+/// # Errors
+/// - termination requested
+pub fn diff_trees<T>(
+    task_tracker: TaskTracker,
+    trees: &[T],
+    mode: DiffMode,
+) -> anyhow::Result<Vec<DiffEntry>>
+where
+    T: AsRef<dyn TreeMetadata> + Sync,
+{
+    log::info!("diff: starting");
+
+    let ctx = DiffCtx {
+        task_tracker,
+        trees,
+        mode,
+    };
+
+    let diffs = ctx.diff_recursive(".".to_string())?;
+    log::info!("diff: completed");
+    Ok(diffs)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generic::task_tracker::tests::dummy_task_tracker;
     use crate::proto::{DirectoryData, MyDirEntry, RegularData, Specific};
     use crate::tree::TreeMetadata;
     use prost_types::Timestamp;
@@ -403,7 +445,9 @@ mod tests {
         let tree2 = MockTree {
             root: create_root(content),
         };
-        let diffs = diff_trees(&[&tree1, &tree2], DiffMode::Output);
+        let task_tracker = dummy_task_tracker();
+        let diffs = diff_trees(task_tracker, &[&tree1, &tree2], DiffMode::Output);
+        let diffs = diffs.unwrap();
         assert!(diffs.is_empty());
     }
 
@@ -418,7 +462,9 @@ mod tests {
         let tree2 = MockTree {
             root: create_root(content2),
         };
-        let diffs = diff_trees(&[&tree1, &tree2], DiffMode::Output);
+        let task_tracker = dummy_task_tracker();
+        let diffs = diff_trees(task_tracker, &[&tree1, &tree2], DiffMode::Output);
+        let diffs = diffs.unwrap();
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::TYPE);
@@ -437,7 +483,9 @@ mod tests {
         let tree2 = MockTree {
             root: create_root(vec![]),
         };
-        let diffs = diff_trees(&[&tree1, &tree2], DiffMode::Output);
+        let task_tracker = dummy_task_tracker();
+        let diffs = diff_trees(task_tracker, &[&tree1, &tree2], DiffMode::Output);
+        let diffs = diffs.unwrap();
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::TYPE);
@@ -457,7 +505,9 @@ mod tests {
         let tree2 = MockTree {
             root: create_root(content2),
         };
-        let diffs = diff_trees(&[&tree1, &tree2], DiffMode::Output);
+        let task_tracker = dummy_task_tracker();
+        let diffs = diff_trees(task_tracker, &[&tree1, &tree2], DiffMode::Output);
+        let diffs = diffs.unwrap();
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::CONTENT);
@@ -483,7 +533,9 @@ mod tests {
         let tree2 = MockTree {
             root: create_root(content2),
         };
-        let diffs = diff_trees(&[&tree1, &tree2], DiffMode::Output);
+        let task_tracker = dummy_task_tracker();
+        let diffs = diff_trees(task_tracker, &[&tree1, &tree2], DiffMode::Output);
+        let diffs = diffs.unwrap();
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].rel_path, "./dir/nested.txt");
         assert_eq!(diffs[0].diff, DiffType::CONTENT);
@@ -504,7 +556,9 @@ mod tests {
         let tree3 = MockTree {
             root: create_root(vec![]),
         };
-        let diffs = diff_trees(&[&tree1, &tree2, &tree3], DiffMode::Output);
+        let task_tracker = dummy_task_tracker();
+        let diffs = diff_trees(task_tracker, &[&tree1, &tree2, &tree3], DiffMode::Output);
+        let diffs = diffs.unwrap();
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].rel_path, "./file.txt");
         assert_eq!(diffs[0].diff, DiffType::TYPE | DiffType::CONTENT);
