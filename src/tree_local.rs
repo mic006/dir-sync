@@ -1,5 +1,7 @@
 //! Manage one `Tree` on the local machine
 
+use rayon::prelude::*;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,7 +13,7 @@ use crate::generic::file::FsTree;
 use crate::generic::fs::MessageExt as _;
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
 use crate::proto::{
-    ActionReq, ActionRsp, MetadataSnap, MyDirEntry, MyDirEntryExt as _, Specific,
+    ActionReq, ActionRsp, DirectoryData, MetadataSnap, MyDirEntry, MyDirEntryExt as _, Specific,
     get_metadata_snap_path,
 };
 use crate::tree::{Tree, TreeMetadata};
@@ -24,6 +26,120 @@ enum LocalMetadataState {
     Received(MyDirEntry),
     /// Result has been consumed
     Terminated,
+}
+
+/// Context shared by all nodes
+struct NodeSharedCtx {
+    fs_tree: Arc<FsTree>,
+    file_matcher: Option<FileMatcher>,
+    // TODO: add task_tracker to allow early exit
+}
+
+fn recursive_walk(
+    ctx: &Arc<NodeSharedCtx>,
+    rel_path: String,
+    mut prev_snap: Option<MyDirEntry>,
+) -> anyhow::Result<Vec<MyDirEntry>> {
+    // get directory content, filtering out ignored files
+    let mut entries = ctx.fs_tree.walk_dir(&rel_path, |p| {
+        if let Some(fm) = &ctx.file_matcher {
+            fm.is_ignored(p)
+        } else {
+            false
+        }
+    })?;
+    entries.sort_by(MyDirEntry::cmp);
+
+    // serialized: get sub directories and their associated previous snapshot, if any
+    let subdirs = entries
+        .iter_mut()
+        .filter_map(|e| {
+            if e.is_dir() {
+                let prev_snap_subdir = prev_snap
+                    .as_ref()
+                    .and_then(|prev_snap| prev_snap.get_entry(&e.file_name).cloned()); //TODO: take instead of clone
+                Some((e, prev_snap_subdir))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    // parallelized: get and update sub directories content recursively
+    subdirs.into_par_iter().try_for_each_with(
+        ctx.clone(),
+        |ctx, (e, prev_snap)| -> anyhow::Result<()> {
+            if e.is_dir() {
+                let entries =
+                    recursive_walk(ctx, format!("{rel_path}/{}", e.file_name), prev_snap)?;
+                e.specific = Some(Specific::Directory(crate::proto::DirectoryData {
+                    content: entries,
+                }));
+            }
+            Ok(())
+        },
+    )?;
+
+    // serialized: update file hash from previous snapshot, if any
+    // return the files to be hashed
+    let files_to_hash = entries
+        .iter_mut()
+        .filter_map(|e| {
+            if let Some(Specific::Regular(file_data)) = &mut e.specific
+                && file_data.size != 0
+            {
+                /* try to get hash from prev_snap_dir
+                 * reuse if
+                 * - same name
+                 * - same mtime
+                 * - same size
+                 */
+                let prev_entry = prev_snap
+                    .as_mut()
+                    .and_then(|prev_snap| prev_snap.get_entry_mut(&e.file_name));
+                let prev_file_hash = prev_entry.and_then(|prev_entry| {
+                    if e.mtime == prev_entry.mtime
+                        && let Some(Specific::Regular(prev_file_data)) = &mut prev_entry.specific
+                        && file_data.size == prev_file_data.size
+                    {
+                        Some(&mut prev_file_data.hash)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(prev_file_hash) = prev_file_hash {
+                    // steal hash from prev_snap, will not be reused anyway
+                    log::debug!("hash[{}]: reusing hash of {rel_path}", ctx.fs_tree);
+                    file_data.hash = std::mem::take(prev_file_hash);
+                    // hash retrieved from previous snapshot, skip
+                    None
+                } else {
+                    // compute hash
+                    Some(e)
+                }
+            } else {
+                // not a regular file or empty file, skip
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    // parallelized: compute hash of files
+    files_to_hash.into_par_iter().try_for_each_with(
+        ctx.clone(),
+        |ctx, e| -> anyhow::Result<()> {
+            let rel_path = format!("{rel_path}/{}", e.file_name);
+            log::debug!("hash[{}]: compute hash of {rel_path}", ctx.fs_tree);
+            let Some(Specific::Regular(file_data)) = &mut e.specific else {
+                unreachable!("working only on regular files")
+            };
+            let f = ctx.fs_tree.open(&rel_path)?;
+            file_data.hash = f.compute_hash()?.as_bytes().into();
+            Ok(())
+        },
+    )?;
+
+    Ok(entries)
 }
 
 /// Content of one directory
@@ -58,23 +174,23 @@ impl TreeLocal {
         let fs_tree = Arc::new(FsTree::new(path)?);
         let metadata_path = get_metadata_snap_path(&config, path);
 
-        // content will finish in memory anyway, no need for flow control
-        let (sender_content, receiver_content) = flume::unbounded();
-
         // expecting a single result
         let (sender_snap, receiver_snap) = flume::bounded(1);
 
         task_tracker.spawn_blocking({
             let task_tracker = task_tracker.clone();
             let fs_tree = fs_tree.clone();
-            move || Self::walk_task(task_tracker, fs_tree, sender_content, file_matcher)
+            let metadata_path = metadata_path.clone();
+            move || {
+                Self::walk_task(
+                    task_tracker,
+                    fs_tree,
+                    file_matcher,
+                    metadata_path,
+                    sender_snap,
+                )
+            }
         })?;
-        task_tracker.spawn(Self::hash_task(
-            fs_tree.clone(),
-            metadata_path.clone(),
-            receiver_content,
-            sender_snap,
-        ))?;
 
         Ok(Self {
             config,
@@ -88,102 +204,27 @@ impl TreeLocal {
     /// Task to walk the tree
     /// 1st step
     fn walk_task(
-        task_tracker: TaskTracker,
+        _task_tracker: TaskTracker,
         fs_tree: Arc<FsTree>,
-        sender_content: Sender<DirContent>,
         file_matcher: Option<FileMatcher>,
-    ) -> anyhow::Result<TaskExit> {
-        log::info!("walk[{fs_tree}]: starting");
-        let mut dir_stack = vec![String::from(".")];
-
-        while let Some(rel_path) = dir_stack.pop() {
-            task_tracker.get_shutdown_req_as_result()?;
-
-            log::debug!("walk[{fs_tree}]: entering {rel_path}");
-
-            let entries = fs_tree.walk_dir(&rel_path, |p| {
-                if let Some(fm) = &file_matcher {
-                    fm.is_ignored(p)
-                } else {
-                    false
-                }
-            })?;
-
-            for e in entries.iter().rev() {
-                if e.is_dir() {
-                    dir_stack.push(format!("{rel_path}/{}", e.file_name));
-                }
-            }
-            sender_content.send(DirContent { rel_path, entries })?;
-        }
-        log::info!("walk[{fs_tree}]: completed");
-        Ok(TaskExit::SecondaryTaskKeepRunning)
-    }
-
-    /// Task to add file hashes, from previous metadata snapshot if available
-    /// 2nd step
-    async fn hash_task(
-        fs_tree: Arc<FsTree>,
         metadata_path: PathBuf,
-        receiver_content: Receiver<DirContent>,
         sender_snap: Sender<MyDirEntry>,
     ) -> anyhow::Result<TaskExit> {
-        log::info!("hash[{fs_tree}]: starting");
-        let mut prev_snap = MetadataSnap::load_from_file(metadata_path).ok();
+        log::info!("walk[{fs_tree}]: starting");
+        let prev_snap = MetadataSnap::load_from_file(metadata_path).ok();
+        let prev_snap = prev_snap.and_then(|snap| snap.root);
+
         let mut snap = fs_tree.stat(".")?;
 
-        while let Ok(mut input) = receiver_content.recv_async().await {
-            log::debug!("hash[{fs_tree}]: entering {}", input.rel_path);
-            let mut prev_snap_dir = prev_snap
-                .as_mut()
-                .and_then(|prev_snap| prev_snap.get_entry_mut(&input.rel_path))
-                .filter(|e| e.is_dir());
+        let ctx = Arc::new(NodeSharedCtx {
+            fs_tree: fs_tree.clone(),
+            file_matcher,
+        });
 
-            // add hash of files
-            for f in &mut input.entries {
-                if let Some(Specific::Regular(file_data)) = &mut f.specific
-                    && file_data.size != 0
-                {
-                    /* try to get hash from prev_snap_dir
-                     * reuse if
-                     * - same name
-                     * - same mtime
-                     * - same size
-                     */
-                    let prev_entry = prev_snap_dir
-                        .as_mut()
-                        .and_then(|s| s.get_entry_mut(&f.file_name));
-                    let prev_file_hash = prev_entry.and_then(|prev_entry| {
-                        if f.mtime == prev_entry.mtime
-                            && let Some(Specific::Regular(prev_file_data)) =
-                                &mut prev_entry.specific
-                            && file_data.size == prev_file_data.size
-                        {
-                            Some(&mut prev_file_data.hash)
-                        } else {
-                            None
-                        }
-                    });
+        let entries = recursive_walk(&ctx, String::from("."), prev_snap)?;
+        snap.specific = Some(Specific::Directory(DirectoryData { content: entries }));
 
-                    let rel_path = format!("{}/{}", input.rel_path, f.file_name);
-                    if let Some(prev_file_hash) = prev_file_hash {
-                        // steal hash from prev_snap, will not be reused anyway
-                        log::debug!("hash[{fs_tree}]: reusing hash of {rel_path}",);
-                        file_data.hash = std::mem::take(prev_file_hash);
-                    } else {
-                        // compute hash
-                        log::debug!("hash[{fs_tree}]: compute hash of {rel_path}",);
-                        let f = fs_tree.open(&rel_path)?;
-                        file_data.hash = f.compute_hash()?.as_bytes().into();
-                    }
-                }
-            }
-
-            // add in collection
-            snap.insert(&input.rel_path, input.entries)?;
-        }
-
-        log::info!("hash[{fs_tree}]: completed");
+        log::info!("walk[{fs_tree}]: completed");
         sender_snap.send(snap)?;
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
