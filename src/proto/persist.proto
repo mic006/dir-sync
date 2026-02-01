@@ -6,10 +6,22 @@ import "google/protobuf/timestamp.proto";
 
 import "common.proto";
 
+/// Synchronization status
+message SyncStatus {
+  // path for synchronization (local or remote path)
+  string sync_path = 1;
+  // timestamp of synchronization
+  google.protobuf.Timestamp ts = 2;
+}
+
 // Snapshot of metadata of one folder
 message MetadataSnap {
   // timestamp of capture
   google.protobuf.Timestamp ts = 1;
+  // canonicalized path
+  string path = 2;
+  /// last synchronization
+  repeated SyncStatus last_syncs = 3;
   // directory information
-  common.MyDirEntry root = 2;
+  common.MyDirEntry root = 4;
 }

@@ -193,7 +193,7 @@ impl FsTree {
             });
             Ok(MyDirEntry {
                 file_name: file_name.into(),
-                permissions: stat.st_mode & 0xFFF,
+                permissions: stat.st_mode & 0xFFFF,
                 uid: stat.st_uid,
                 gid: stat.st_gid,
                 mtime,

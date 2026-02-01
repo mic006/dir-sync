@@ -135,6 +135,7 @@ impl WalkCtx {
 /// Manage one `Tree` on the local machine
 pub struct TreeLocal {
     config: ConfigRef,
+    path: String,
     metadata_path: PathBuf,
     ts: Timestamp,
     fs_tree: Arc<FsTree>,
@@ -176,6 +177,7 @@ impl TreeLocal {
 
         Ok(Self {
             config,
+            path: path.into(),
             metadata_path,
             ts,
             fs_tree,
@@ -256,6 +258,8 @@ impl Tree for TreeLocal {
             // save metadata
             let snap = MetadataSnap {
                 ts: Some(self.ts),
+                path: self.path.clone(),
+                last_syncs: Vec::new(), // TODO
                 root: Some(snap),
             };
             drop(snap.save_to_file(&self.metadata_path));
