@@ -1,5 +1,7 @@
 //! dir-sync entry point
 
+use rayon::prelude::*;
+
 use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -203,7 +205,11 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
     }
 
     // perform diff
-    let diffs = crate::diff::diff_trees(task_tracker, &ctx.trees, mode)?;
+    let diffs = crate::diff::diff_trees(task_tracker, &ctx.trees, mode);
+
+    ctx.save_snaps(&[]);
+
+    let diffs = diffs?;
 
     match mode {
         DiffMode::Status => {
@@ -286,6 +292,13 @@ impl RunContext {
             self.trees.push(tree);
         }
         Ok(())
+    }
+
+    fn save_snaps(&mut self, synced_remotes: &[&str]) {
+        // parallelized: save snap of each tree
+        self.trees
+            .par_iter_mut()
+            .for_each(|t| t.save_snap(synced_remotes));
     }
 }
 

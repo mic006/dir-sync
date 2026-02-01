@@ -44,7 +44,7 @@ impl WalkCtx {
         mut prev_snap: Option<MyDirEntry>,
     ) -> anyhow::Result<()> {
         self.task_tracker.get_shutdown_req_as_result()?;
-        log::debug!("walk[{}]: entering {rel_path}", self.fs_tree);
+        log::debug!("tree[{}]: entering {rel_path}", self.fs_tree);
 
         let mut entries = self.fs_tree.walk_dir(&rel_path, |p| self.ignore(p))?;
         entries.sort_by(MyDirEntry::cmp);
@@ -87,7 +87,7 @@ impl WalkCtx {
                 });
                 if let Some(prev_file_hash) = prev_file_hash {
                     // steal hash from prev_snap, will not be reused anyway
-                    log::debug!("walk[{}]: reusing hash of {rel_path}", self.fs_tree);
+                    log::debug!("tree[{}]: reusing hash of {rel_path}", self.fs_tree);
                     file_data.hash = std::mem::take(prev_file_hash);
                     // hash retrieved from previous snapshot, skip
                 } else {
@@ -108,7 +108,7 @@ impl WalkCtx {
         files_to_hash.into_par_iter().try_for_each(
             |(rel_path, file_data)| -> anyhow::Result<()> {
                 self.task_tracker.get_shutdown_req_as_result()?;
-                log::debug!("walk[{}]: compute hash of {rel_path}", self.fs_tree);
+                log::debug!("tree[{}]: compute hash of {rel_path}", self.fs_tree);
                 let f = self.fs_tree.open(&rel_path)?;
                 file_data.hash = f.compute_hash()?.as_bytes().into();
                 Ok(())
@@ -118,7 +118,7 @@ impl WalkCtx {
         // update directory content
         current_entry.specific = Some(Specific::Directory(DirectoryData { content: entries }));
 
-        log::debug!("walk[{}]: leaving {rel_path}", self.fs_tree);
+        log::debug!("tree[{}]: leaving {rel_path}", self.fs_tree);
         Ok(())
     }
 
@@ -191,7 +191,7 @@ impl TreeLocal {
         metadata_path: PathBuf,
         sender_snap: Sender<MyDirEntry>,
     ) -> anyhow::Result<TaskExit> {
-        log::info!("walk[{fs_tree}]: starting");
+        log::info!("tree[{fs_tree}]: starting walk");
         let prev_snap = MetadataSnap::load_from_file(metadata_path).ok();
         let prev_snap = prev_snap.and_then(|snap| snap.root);
 
@@ -205,7 +205,7 @@ impl TreeLocal {
 
         ctx.walk_recursive(String::from("."), &mut snap, prev_snap)?;
 
-        log::info!("walk[{fs_tree}]: completed");
+        log::info!("tree[{fs_tree}]: walk completed");
         sender_snap.send(snap)?;
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
@@ -247,19 +247,19 @@ impl Tree for TreeLocal {
     fn get_fs_action_responder(&self) -> Receiver<ActionRsp> {
         todo!();
     }
-}
 
-impl Drop for TreeLocal {
-    fn drop(&mut self) {
+    fn save_snap(&mut self, _synced_remotes: &[&str]) {
         if let LocalMetadataState::Received(snap) =
             std::mem::replace(&mut self.metadata_state, LocalMetadataState::Terminated)
         {
+            log::info!("tree[{}]: saving snap", self.fs_tree);
             // save metadata
             let snap = MetadataSnap {
                 ts: Some(self.ts),
                 root: Some(snap),
             };
             drop(snap.save_to_file(&self.metadata_path));
+            log::info!("tree[{}]: snap saved", self.fs_tree);
         }
     }
 }

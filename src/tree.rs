@@ -24,6 +24,9 @@ pub trait Tree: TreeMetadata {
 
     /// Get receiver to get FS action responses
     fn get_fs_action_responder(&self) -> Receiver<ActionRsp>;
+
+    /// Save snap file
+    fn save_snap(&mut self, synced_remotes: &[&str]);
 }
 
 /// Consider a `Box<dyn Tree>` as a ref to `TreeMetadata`
