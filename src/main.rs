@@ -25,6 +25,11 @@ pub mod config;
 pub mod diff;
 pub mod generic {
     pub mod file;
+    pub mod format {
+        pub mod permissions;
+        pub mod size;
+        pub mod timestamp;
+    }
     pub mod fs;
     pub mod libc;
     pub mod path_regex;
