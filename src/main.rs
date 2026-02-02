@@ -27,6 +27,7 @@ pub mod generic {
     pub mod file;
     pub mod format {
         pub mod hash;
+        pub mod owner;
         pub mod permissions;
         pub mod size;
         pub mod timestamp;
