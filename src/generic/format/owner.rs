@@ -1,6 +1,10 @@
 //! Format owner & group
 
-use std::{collections::BTreeMap, ffi::CStr};
+use std::collections::BTreeMap;
+use std::ffi::CStr;
+use std::fmt::Write as _;
+
+use crate::proto::MyDirEntry;
 
 pub struct OwnerGroupDb {
     /// Buffer to read owner or group name
@@ -44,6 +48,15 @@ impl OwnerGroupDb {
             .entry(gid)
             .or_insert_with(|| Self::get_gid_name(&mut self.buf, gid))
             .as_str()
+    }
+
+    pub fn format_owner_group(&mut self, entry: &MyDirEntry) -> String {
+        let mut res = String::with_capacity(15); // owner and group are usually ASCII
+        let owner = self.get_owner(entry.uid);
+        write!(&mut res, "{owner:>7.7}:").unwrap();
+        let group = self.get_group(entry.gid);
+        write!(&mut res, "{group:<7.7}").unwrap();
+        res
     }
 
     /// Perform syscall to get owner name
@@ -92,6 +105,7 @@ impl OwnerGroupDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::MyDirEntry;
 
     #[test]
     fn test_owner_group_db() {
@@ -108,5 +122,47 @@ mod tests {
         // Values can be retrieved without syscall
         assert_eq!(db.get_owner(14), "test_invalid");
         assert_eq!(db.get_group(11), "test_invalid");
+    }
+
+    #[test]
+    fn test_format_owner_group() {
+        let mut db = OwnerGroupDb::default();
+
+        // Test with root user and group (from syscall)
+        let entry = MyDirEntry {
+            file_name: "test".to_string(),
+            permissions: 0,
+            uid: 0, // root
+            gid: 0, // root
+            mtime: None,
+            specific: None,
+        };
+        assert_eq!(db.format_owner_group(&entry), "   root:root   ");
+
+        // Test with injected values
+        db.owner.insert(1001, "user1".to_string());
+        db.group.insert(1002, "group2".to_string());
+        let entry2 = MyDirEntry {
+            file_name: "test".to_string(),
+            permissions: 0,
+            uid: 1001,
+            gid: 1002,
+            mtime: None,
+            specific: None,
+        };
+        assert_eq!(db.format_owner_group(&entry2), "  user1:group2 ");
+
+        // Test with long names that will be truncated
+        db.owner.insert(1003, "longusername".to_string());
+        db.group.insert(1004, "longgroupname".to_string());
+        let entry3 = MyDirEntry {
+            file_name: "test".to_string(),
+            permissions: 0,
+            uid: 1003,
+            gid: 1004,
+            mtime: None,
+            specific: None,
+        };
+        assert_eq!(db.format_owner_group(&entry3), "longuse:longgro");
     }
 }
