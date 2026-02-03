@@ -44,12 +44,12 @@ impl Output {
             writeln!(self.stdout, "last_syncs: []")?;
         } else {
             writeln!(self.stdout, "last_syncs:")?;
-            for sync_status in &snap.last_syncs {
+            for (sync_path, sync_ts) in &snap.last_syncs {
                 writeln!(
                     self.stdout,
                     "  - {}  {}",
-                    Self::get_ts(sync_status.ts.as_ref()),
-                    sync_status.sync_path
+                    Self::get_ts(Some(sync_ts)),
+                    sync_path
                 )?;
             }
         }

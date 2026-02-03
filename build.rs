@@ -35,6 +35,7 @@ fn main() -> anyhow::Result<()> {
     // generate rust component from protos
     prost_build::Config::new()
         .include_file("mod.rs")
+        .btree_map(["."]) // use BTreeMap instead of HashMap in generated code
         .compile_protos(&protos, &["src/proto"])?;
 
     Ok(())

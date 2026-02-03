@@ -2,6 +2,7 @@
 
 use rayon::prelude::*;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -134,12 +135,20 @@ impl WalkCtx {
 
 /// Manage one `Tree` on the local machine
 pub struct TreeLocal {
+    /// Configuration
     config: ConfigRef,
+    /// Canonicalized path
     path: String,
+    /// Path to the metadata snapshot file
     metadata_path: PathBuf,
+    /// Timestamp of the current snapshot
     ts: Timestamp,
+    /// Root fd
     fs_tree: Arc<FsTree>,
+    /// Current state
     metadata_state: LocalMetadataState,
+    /// Syncs retrieved from the previous metadata snapshot
+    last_syncs: BTreeMap<String, Timestamp>,
 }
 
 impl TreeLocal {
@@ -157,22 +166,23 @@ impl TreeLocal {
         let fs_tree = Arc::new(FsTree::new(path)?);
         let metadata_path = get_metadata_snap_path(&config, path);
 
+        // read previous snapshot
+        let mut prev_snap = MetadataSnap::load_from_file(&metadata_path).ok();
+        // keep last syncs to add in updated snapshot
+        let last_syncs = prev_snap
+            .as_mut()
+            .map(|snap| std::mem::take(&mut snap.last_syncs))
+            .unwrap_or_default();
+        // extract snap content to speed the new snap
+        let prev_snap = prev_snap.and_then(|snap| snap.root);
+
         // expecting a single result
         let (sender_snap, receiver_snap) = flume::bounded(1);
 
         task_tracker.spawn_blocking({
             let task_tracker = task_tracker.clone();
             let fs_tree = fs_tree.clone();
-            let metadata_path = metadata_path.clone();
-            move || {
-                Self::walk_task(
-                    task_tracker,
-                    fs_tree,
-                    file_matcher,
-                    metadata_path,
-                    sender_snap,
-                )
-            }
+            move || Self::walk_task(task_tracker, fs_tree, file_matcher, prev_snap, sender_snap)
         })?;
 
         Ok(Self {
@@ -182,6 +192,7 @@ impl TreeLocal {
             ts,
             fs_tree,
             metadata_state: LocalMetadataState::Processing(receiver_snap),
+            last_syncs,
         })
     }
 
@@ -190,12 +201,10 @@ impl TreeLocal {
         task_tracker: TaskTracker,
         fs_tree: Arc<FsTree>,
         file_matcher: Option<FileMatcher>,
-        metadata_path: PathBuf,
+        prev_snap: Option<MyDirEntry>,
         sender_snap: Sender<MyDirEntry>,
     ) -> anyhow::Result<TaskExit> {
         log::info!("tree[{fs_tree}]: starting walk");
-        let prev_snap = MetadataSnap::load_from_file(metadata_path).ok();
-        let prev_snap = prev_snap.and_then(|snap| snap.root);
 
         let mut snap = fs_tree.stat(".")?;
 
@@ -250,16 +259,22 @@ impl Tree for TreeLocal {
         todo!();
     }
 
-    fn save_snap(&mut self, _synced_remotes: &[&str]) {
+    fn save_snap(&mut self, synced_remotes: &[&str]) {
         if let LocalMetadataState::Received(snap) =
             std::mem::replace(&mut self.metadata_state, LocalMetadataState::Terminated)
         {
             log::info!("tree[{}]: saving snap", self.fs_tree);
+            // restore last_syncs from loaded snapshot
+            let mut last_syncs = std::mem::take(&mut self.last_syncs);
+            // and update with synced remotes
+            for remote in synced_remotes {
+                last_syncs.insert(remote.to_string(), self.ts);
+            }
             // save metadata
             let snap = MetadataSnap {
                 ts: Some(self.ts),
                 path: self.path.clone(),
-                last_syncs: Vec::new(), // TODO
+                last_syncs,
                 root: Some(snap),
             };
             drop(snap.save_to_file(&self.metadata_path));
