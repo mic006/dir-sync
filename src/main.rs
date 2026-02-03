@@ -31,6 +31,7 @@ pub mod generic {
         pub mod permissions;
         pub mod size;
         pub mod timestamp;
+        pub mod tree;
     }
     pub mod fs;
     pub mod libc;
