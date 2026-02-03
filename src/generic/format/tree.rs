@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 /// Context to display a tree
 #[derive(Default)]
-struct FormatTree {
+pub struct FormatTree {
     /// Bitmap of active subtrees
     active_bitmap: u64,
     /// Next level
@@ -23,13 +23,13 @@ impl FormatTree {
         self.next_level -= 1;
     }
 
-    pub fn new_entry(&mut self, last: bool) -> String {
+    pub fn entry(&mut self, last_in_folder: bool) -> String {
         if self.next_level == 0 {
             return String::new();
         }
         let level = self.next_level - 1;
 
-        if last {
+        if last_in_folder {
             self.active_bitmap &= !(1 << level);
         }
 
@@ -42,7 +42,7 @@ impl FormatTree {
                 write!(&mut res, "│  ").unwrap();
             }
         }
-        if last {
+        if last_in_folder {
             write!(&mut res, "└─ ").unwrap();
         } else {
             write!(&mut res, "├─ ").unwrap();
@@ -59,18 +59,18 @@ mod tests {
     fn test_format_tree() {
         let mut tree = FormatTree::default();
 
-        assert_eq!(tree.new_entry(false), "");
+        assert_eq!(tree.entry(false), "");
         tree.entering_sub();
-        assert_eq!(tree.new_entry(false), "├─ ");
+        assert_eq!(tree.entry(false), "├─ ");
         tree.entering_sub();
-        assert_eq!(tree.new_entry(false), "│  ├─ ");
-        assert_eq!(tree.new_entry(true), "│  └─ ");
+        assert_eq!(tree.entry(false), "│  ├─ ");
+        assert_eq!(tree.entry(true), "│  └─ ");
         tree.leaving_sub();
-        assert_eq!(tree.new_entry(false), "├─ ");
-        assert_eq!(tree.new_entry(true), "└─ ");
+        assert_eq!(tree.entry(false), "├─ ");
+        assert_eq!(tree.entry(true), "└─ ");
         tree.entering_sub();
-        assert_eq!(tree.new_entry(false), "   ├─ ");
-        assert_eq!(tree.new_entry(true), "   └─ ");
+        assert_eq!(tree.entry(false), "   ├─ ");
+        assert_eq!(tree.entry(true), "   └─ ");
         tree.leaving_sub();
         tree.leaving_sub();
     }

@@ -3,7 +3,8 @@
 use crate::proto::{MyDirEntry, Specific};
 
 /// Get file type and permissions
-fn format_file_type_and_permissions(entry: &MyDirEntry) -> String {
+#[must_use]
+pub fn format_file_type_and_permissions(entry: &MyDirEntry) -> String {
     let mut res = vec![0u8; 10];
     //let mut res = String::with_capacity(10);
     res[0] = match &entry.specific {

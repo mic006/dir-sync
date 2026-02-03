@@ -15,12 +15,12 @@ pub fn format_file_size(entry: &MyDirEntry) -> String {
 
 /// Get file size in human readable format
 ///
-/// Use at most 4 characters
+/// Use exactly 4 characters
 /// - 3 characters for the number; may be fractional if < 10, like 3.5
-/// - size suffix if needed
+/// - size suffix
 #[must_use]
 fn format_size(sz: u64) -> String {
-    const SUFFIXES: [char; 7] = [' ', 'k', 'M', 'G', 'T', 'P', 'E'];
+    const SUFFIXES: [char; 7] = ['b', 'k', 'M', 'G', 'T', 'P', 'E'];
     #[allow(clippy::cast_precision_loss)]
     let mut ft_sz = sz as f64;
     let mut suffix = 0_usize;
@@ -33,7 +33,7 @@ fn format_size(sz: u64) -> String {
 
     let res = if suffix == 0 {
         // exact file size
-        format!("{ft_sz:>3.0} ")
+        format!("{ft_sz:>3.0}b")
     } else if ft_sz < 9.95 {
         // single digit, fractional part
         format!("{ft_sz:>3.1}{suffix_c}")
@@ -74,10 +74,10 @@ mod tests {
 
     #[test]
     fn test_format_size() {
-        assert_eq!(format_size(0), "  0 ");
-        assert_eq!(format_size(9), "  9 ");
-        assert_eq!(format_size(10), " 10 ");
-        assert_eq!(format_size(999), "999 ");
+        assert_eq!(format_size(0), "  0b");
+        assert_eq!(format_size(9), "  9b");
+        assert_eq!(format_size(10), " 10b");
+        assert_eq!(format_size(999), "999b");
         assert_eq!(format_size(1000), "1.0k");
         assert_eq!(format_size(1023), "1.0k");
         assert_eq!(format_size(1024), "1.0k");

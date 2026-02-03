@@ -4,45 +4,98 @@ use std::io::Write as _;
 
 use prost_types::Timestamp;
 
+use crate::generic::format::owner::OwnerGroupDb;
+use crate::generic::format::permissions::format_file_type_and_permissions;
+use crate::generic::format::size::format_file_size;
 use crate::generic::format::timestamp::format_ts;
-use crate::proto::MetadataSnap;
+use crate::generic::format::tree::FormatTree;
+use crate::proto::{MetadataSnap, MyDirEntry, Specific};
 
 /// Output `MetadataSnap` to stdout
 pub fn output(snap: &MetadataSnap) {
-    let _ignored = output_exit_on_error(snap);
+    let _ignored = Output::default().output_exit_on_error(snap);
 }
 
-/// Get timestamp in human format
-fn get_ts(ts: Option<&Timestamp>) -> String {
-    ts.map_or_else(|| String::from("N/A"), format_ts)
+struct Output {
+    stdout: std::io::Stdout,
+    owner_group_db: OwnerGroupDb,
+    format_tree: FormatTree,
 }
 
-fn output_exit_on_error(snap: &MetadataSnap) -> anyhow::Result<()> {
-    let mut stdout = std::io::stdout();
-
-    writeln!(stdout, "ts: {}", get_ts(snap.ts.as_ref()))?;
-
-    writeln!(stdout, "path: {}", snap.path)?;
-
-    if snap.last_syncs.is_empty() {
-        writeln!(stdout, "last_syncs: []")?;
-    } else {
-        writeln!(stdout, "last_syncs:")?;
-        for sync_status in &snap.last_syncs {
-            writeln!(
-                stdout,
-                "  - {}  {}",
-                get_ts(sync_status.ts.as_ref()),
-                sync_status.sync_path
-            )?;
+impl Default for Output {
+    fn default() -> Self {
+        Self {
+            stdout: std::io::stdout(),
+            owner_group_db: OwnerGroupDb::default(),
+            format_tree: FormatTree::default(),
         }
     }
+}
 
-    if let Some(_root) = &snap.root {
-        todo!();
-    } else {
-        writeln!(stdout, "root: None")?;
+impl Output {
+    /// Output `MetadataSnap` to stdout, with easy exit on error (stdout closed)
+    fn output_exit_on_error(&mut self, snap: &MetadataSnap) -> anyhow::Result<()> {
+        writeln!(self.stdout, "ts: {}", Self::get_ts(snap.ts.as_ref()))?;
+
+        writeln!(self.stdout, "path: {}", snap.path)?;
+
+        if snap.last_syncs.is_empty() {
+            writeln!(self.stdout, "last_syncs: []")?;
+        } else {
+            writeln!(self.stdout, "last_syncs:")?;
+            for sync_status in &snap.last_syncs {
+                writeln!(
+                    self.stdout,
+                    "  - {}  {}",
+                    Self::get_ts(sync_status.ts.as_ref()),
+                    sync_status.sync_path
+                )?;
+            }
+        }
+
+        if let Some(root) = &snap.root {
+            writeln!(self.stdout, "content:")?;
+            self.output_entry(root, true)?;
+        } else {
+            writeln!(self.stdout, "content: None")?;
+        }
+
+        Ok(())
     }
 
-    Ok(())
+    /// Output directory content, recursively
+    fn output_dir(&mut self, entries: &[MyDirEntry]) -> anyhow::Result<()> {
+        self.format_tree.entering_sub();
+        for (i, entry) in entries.iter().enumerate() {
+            let last_in_folder = i == entries.len() - 1;
+            self.output_entry(entry, last_in_folder)?;
+        }
+        self.format_tree.leaving_sub();
+        Ok(())
+    }
+
+    /// Output one entry, on one line
+    fn output_entry(&mut self, entry: &MyDirEntry, last_in_folder: bool) -> anyhow::Result<()> {
+        let file_perm = format_file_type_and_permissions(entry);
+        let entry_sz = format_file_size(entry);
+        let owner_group = self.owner_group_db.format_owner_group(entry);
+        let ts = Self::get_ts(entry.mtime.as_ref());
+        let tree = self.format_tree.entry(last_in_folder);
+        writeln!(
+            self.stdout,
+            "{file_perm} {entry_sz} {owner_group} {ts} {tree}{}",
+            entry.file_name
+        )?;
+        if let Some(Specific::Directory(dir_data)) = &entry.specific
+            && !dir_data.content.is_empty()
+        {
+            self.output_dir(&dir_data.content)?;
+        }
+        Ok(())
+    }
+
+    /// Get timestamp in human format
+    fn get_ts(ts: Option<&Timestamp>) -> String {
+        ts.map_or_else(|| String::from("N/A"), format_ts)
+    }
 }

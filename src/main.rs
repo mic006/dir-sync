@@ -75,19 +75,19 @@ struct Arg {
 #[allow(clippy::struct_excessive_bools)]
 struct Mode {
     /// Stop on first difference and exit with failure status (script)
-    #[arg(long, help_heading = "Mode")]
+    #[arg(short('s'), long, help_heading = "Mode")]
     status: bool,
     /// Output the differences to stdout, one diff per line
-    #[arg(long, help_heading = "Mode")]
+    #[arg(short('o'), long, help_heading = "Mode")]
     output: bool,
     /// Perform automatic synchronization, ignoring conflicts
-    #[arg(long, help_heading = "Mode")]
+    #[arg(short('b'), long, help_heading = "Mode")]
     sync_batch: bool,
     /// Refresh the metadata snapshot of a single source
-    #[arg(long, help_heading = "Mode", hide_short_help = true)]
+    #[arg(short('R'), long, help_heading = "Mode", hide_short_help = true)]
     refresh_metadata_snap: bool,
     /// Dump the metadata snapshot content to stdout
-    #[arg(long, help_heading = "Mode", hide_short_help = true)]
+    #[arg(short('P'), long, help_heading = "Mode", hide_short_help = true)]
     dump_metadata_snap: bool,
     /// Remote session, spawned by the master session over SSH (not for end user)
     #[arg(long, hide = true)]
@@ -148,7 +148,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         );
         let snap_file = &arg.dirs[0];
         let snap = MetadataSnap::load_from_file(snap_file)?;
-        println!("{snap:#?}");
+        output::output(&snap);
         Ok(std::process::ExitCode::SUCCESS)
     } else {
         let rt = tokio::runtime::Runtime::new()?;
@@ -248,6 +248,7 @@ async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTa
 
     let mut ctx = RunContext::new(&task_tracker, &arg)?;
     ctx.trees[0].wait_for_tree().await?;
+    ctx.save_snaps(&[]);
 
     Ok(TaskExit::MainTaskStopAppSuccess)
 }
