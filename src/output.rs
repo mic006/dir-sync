@@ -4,6 +4,7 @@ use std::io::Write as _;
 
 use prost_types::Timestamp;
 
+use crate::generic::format::hash::format_hash;
 use crate::generic::format::owner::OwnerGroupDb;
 use crate::generic::format::permissions::format_file_type_and_permissions;
 use crate::generic::format::size::format_file_size;
@@ -80,10 +81,11 @@ impl Output {
         let entry_sz = format_file_size(entry);
         let owner_group = self.owner_group_db.format_owner_group(entry);
         let ts = Self::get_ts(entry.mtime.as_ref());
+        let hash_str = format_hash(entry);
         let tree = self.format_tree.entry(last_in_folder);
         writeln!(
             self.stdout,
-            "{file_perm} {entry_sz} {owner_group} {ts} {tree}{}",
+            "{file_perm} {entry_sz} {owner_group} {ts} {hash_str} {tree}{}",
             entry.file_name
         )?;
         if let Some(Specific::Directory(dir_data)) = &entry.specific
