@@ -26,6 +26,15 @@ pub fn format_ts(ts: &Timestamp) -> String {
     }
 }
 
+#[must_use]
+pub fn format_opt_ts(ts: Option<&Timestamp>) -> String {
+    if let Some(ts) = ts {
+        format_ts(ts)
+    } else {
+        "N/A                ".into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,8 +1,14 @@
 //! Manipulation of `MetadataSnap`
 
+use rayon::prelude::*;
+
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use prost_types::Timestamp;
+
 use crate::config::ConfigRef;
+use crate::generic::format::timestamp::format_ts;
 use crate::generic::fs::MessageExt as _;
 use crate::proto::MetadataSnap;
 
@@ -102,6 +108,86 @@ impl SnapAccess {
 
         Ok(())
     }
+}
+
+/// List user's metadata snapshots to stdout
+pub fn list_snaps_stdout(cfg: &ConfigRef) {
+    let _ignored = list_snaps_stdout_exit_on_error(cfg);
+}
+
+/// Extract of `MetadataSnap` to be displayed
+struct SnapExtract {
+    input_path: String,
+    input_hash: String,
+    ts: Timestamp,
+    last_syncs: BTreeMap<String, Timestamp>,
+}
+
+impl From<MetadataSnap> for SnapExtract {
+    fn from(value: MetadataSnap) -> Self {
+        let input_hash = SnapAccess::path_to_unique_id(&value.path);
+        Self {
+            input_path: value.path,
+            input_hash,
+            ts: value.ts.unwrap(),
+            last_syncs: value.last_syncs,
+        }
+    }
+}
+
+/// List user's metadata snapshots to stdout, with easy exit on error (stdout closed)
+fn list_snaps_stdout_exit_on_error(cfg: &ConfigRef) -> anyhow::Result<()> {
+    // go through snaps directories
+    let dirs = cfg
+        .local_metadata_snap_path_user
+        .read_dir()?
+        .filter_map(|entry| {
+            entry
+                .map(|entry| {
+                    let path = entry.path();
+                    path.is_dir().then_some(path)
+                })
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // read snaps and extract useful data
+    let mut extracts: Vec<SnapExtract> = dirs
+        .into_par_iter()
+        .filter_map(|mut path| {
+            path.push(SNAP_MAIN_BASENAME);
+            path.set_extension(SNAP_EXT);
+            MetadataSnap::load_from_file(&path).ok().map(Into::into)
+        })
+        .collect();
+
+    // sort by hash name
+    extracts.sort_by(|a, b| a.input_hash.cmp(&b.input_hash));
+
+    // display info
+    let mut stdout = std::io::stdout();
+    for extract in extracts {
+        use std::io::Write as _;
+        writeln!(stdout, "{}  {}", extract.input_hash, extract.input_path)?;
+        writeln!(stdout, "  ts: {}", format_ts(&extract.ts))?;
+        if extract.last_syncs.is_empty() {
+            writeln!(stdout, "  last_syncs: []")?;
+        } else {
+            writeln!(stdout, "  last_syncs:")?;
+            for (sync_path, sync_ts) in extract.last_syncs {
+                writeln!(
+                    stdout,
+                    "    - {}  {}  {}",
+                    format_ts(&sync_ts),
+                    SnapAccess::path_to_unique_id(&sync_path),
+                    sync_path
+                )?;
+            }
+        }
+        writeln!(stdout)?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

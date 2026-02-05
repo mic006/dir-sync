@@ -18,6 +18,7 @@ use crate::generic::fs::{MessageExt as _, PathExt as _};
 use crate::generic::libc::reset_sigpipe;
 use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
 use crate::proto::{MetadataSnap, TimestampExt as _};
+use crate::snap::list_snaps_stdout;
 use crate::tree::Tree;
 use crate::tree_local::TreeLocal;
 
@@ -60,13 +61,13 @@ struct Arg {
     #[arg(short, long)]
     profile: Option<String>,
     /// Log target: stderr or file location
-    #[arg(short, long)]
+    #[arg(short('L'), long)]
     log: Option<PathBuf>,
     /// Enable debug output
     #[arg(short, long)]
     debug: bool,
     /// Directories to compare
-    #[arg(required = true)]
+    #[arg()]
     dirs: Vec<String>,
 }
 
@@ -84,6 +85,9 @@ struct Mode {
     /// Perform automatic synchronization, ignoring conflicts
     #[arg(short('b'), long, help_heading = "Mode")]
     sync_batch: bool,
+    /// List user's metadata snapshots to stdout
+    #[arg(short('l'), long, help_heading = "Mode")]
+    list_metadata_snap: bool,
     /// Refresh the metadata snapshot of a single source
     #[arg(short('R'), long, help_heading = "Mode", hide_short_help = true)]
     refresh_metadata_snap: bool,
@@ -105,6 +109,8 @@ impl Arg {
                 RunMode::Output
             } else if mode.sync_batch {
                 RunMode::SyncBatch
+            } else if mode.list_metadata_snap {
+                RunMode::ListMetadataSnap
             } else if mode.refresh_metadata_snap {
                 RunMode::RefreshMetadataSnap
             } else if mode.dump_metadata_snap {
@@ -128,6 +134,8 @@ enum RunMode {
     Output,
     /// Perform automatic synchronization, ignoring conflicts
     SyncBatch,
+    /// List user's metadata snapshots to stdout
+    ListMetadataSnap,
     /// Refresh the metadata snapshot of a single source
     RefreshMetadataSnap,
     /// Dump the metadata snapshot content to stdout
@@ -142,18 +150,31 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 
     let arg = Arg::parse();
     let run_mode = arg.run_mode();
-    if run_mode == RunMode::DumpMetadataSnap {
-        anyhow::ensure!(
-            arg.dirs.len() == 1,
-            "DumpMetadataSnap mode: expects a single file"
-        );
-        let snap_file = &arg.dirs[0];
-        let snap = MetadataSnap::load_from_file(snap_file)?;
-        output::output(&snap);
-        Ok(std::process::ExitCode::SUCCESS)
-    } else {
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async move { async_main(arg, run_mode).await })
+    match run_mode {
+        RunMode::ListMetadataSnap => {
+            anyhow::ensure!(
+                arg.dirs.is_empty(),
+                "ListMetadataSnap mode: expects no extra argument"
+            );
+            let config = Arc::new(Config::from_file(None)?);
+            list_snaps_stdout(&config);
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        RunMode::DumpMetadataSnap => {
+            anyhow::ensure!(
+                arg.dirs.len() == 1,
+                "DumpMetadataSnap mode: expects a single file"
+            );
+            let snap_file = &arg.dirs[0];
+            let snap = MetadataSnap::load_from_file(snap_file)?;
+            output::output(&snap);
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        _ => {
+            // async modes
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async move { async_main(arg, run_mode).await })
+        }
     }
 }
 
@@ -193,7 +214,7 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
             task_tracker_main
                 .spawn(async move { refresh_metadata_snap(task_tracker, arg).await })?;
         }
-        RunMode::DumpMetadataSnap => unreachable!("handled in main()"),
+        RunMode::ListMetadataSnap | RunMode::DumpMetadataSnap => unreachable!("handled in main()"),
         _ => todo!(),
     }
 
