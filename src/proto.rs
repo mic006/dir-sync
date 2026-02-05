@@ -8,7 +8,7 @@
 )]
 
 use std::cmp::Ordering;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // generated code from proto files
 include!(concat!(env!("OUT_DIR"), "/mod.rs"));
@@ -17,9 +17,6 @@ pub use action::{action_req::Req as ActionReq, action_rsp::Rsp as ActionRsp};
 pub use common::{DeviceData, DirectoryData, MyDirEntry, RegularData, my_dir_entry::Specific};
 pub use persist::MetadataSnap;
 pub use prost_types::Timestamp;
-
-use crate::config::ConfigRef;
-use crate::generic::fs::systemd_escape_path;
 
 /// Null value for google.protobuf.NullValue fields
 pub const PROTO_NULL_VALUE: i32 = 0;
@@ -130,15 +127,6 @@ impl std::ops::DerefMut for MetadataSnap {
     }
 }
 
-/// Convert canonical path to snap file name
-pub fn get_metadata_snap_path(cfg: &ConfigRef, input_path: &str) -> PathBuf {
-    let mut path = cfg
-        .local_metadata_snap_path_user
-        .join(systemd_escape_path(input_path));
-    path.set_extension("pb.bin.zst");
-    path
-}
-
 /// Extension to `prost_types::Timestamp`
 pub trait TimestampExt
 where
@@ -158,24 +146,5 @@ impl TimestampExt for Timestamp {
             seconds: d.as_secs() as i64,
             nanos: d.subsec_nanos() as i32,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use crate::config::tests::load_ut_cfg;
-
-    use super::*;
-
-    #[test]
-    fn test_get_metadata_snap_path() {
-        let cfg = Arc::new(load_ut_cfg().unwrap());
-        assert_eq!(
-            get_metadata_snap_path(&cfg, "/data/folder"),
-            cfg.local_metadata_snap_path_user
-                .join("data-folder.pb.bin.zst")
-        );
     }
 }

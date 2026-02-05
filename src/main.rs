@@ -42,6 +42,7 @@ pub mod generic {
 }
 pub mod output;
 pub mod proto;
+pub mod snap;
 pub mod tree;
 pub mod tree_local;
 

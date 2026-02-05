@@ -3,7 +3,6 @@
 use rayon::prelude::*;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use flume::{Receiver, Sender};
@@ -11,12 +10,11 @@ use prost_types::Timestamp;
 
 use crate::config::{ConfigRef, FileMatcher};
 use crate::generic::file::FsTree;
-use crate::generic::fs::MessageExt as _;
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
 use crate::proto::{
     ActionReq, ActionRsp, DirectoryData, MetadataSnap, MyDirEntry, MyDirEntryExt as _, Specific,
-    get_metadata_snap_path,
 };
+use crate::snap::SnapAccess;
 use crate::tree::{Tree, TreeMetadata};
 
 /// State for metadata
@@ -139,8 +137,8 @@ pub struct TreeLocal {
     config: ConfigRef,
     /// Canonicalized path
     path: String,
-    /// Path to the metadata snapshot file
-    metadata_path: PathBuf,
+    /// Access to metadata snapshots
+    snap_access: SnapAccess,
     /// Timestamp of the current snapshot
     ts: Timestamp,
     /// Root fd
@@ -164,10 +162,11 @@ impl TreeLocal {
         file_matcher: Option<FileMatcher>,
     ) -> anyhow::Result<Self> {
         let fs_tree = Arc::new(FsTree::new(path)?);
-        let metadata_path = get_metadata_snap_path(&config, path);
+
+        let snap_access = SnapAccess::new(&config, path);
 
         // read previous snapshot
-        let mut prev_snap = MetadataSnap::load_from_file(&metadata_path).ok();
+        let mut prev_snap = snap_access.load_main_snap();
         // keep last syncs to add in updated snapshot
         let last_syncs = prev_snap
             .as_mut()
@@ -188,7 +187,7 @@ impl TreeLocal {
         Ok(Self {
             config,
             path: path.into(),
-            metadata_path,
+            snap_access,
             ts,
             fs_tree,
             metadata_state: LocalMetadataState::Processing(receiver_snap),
@@ -277,8 +276,10 @@ impl Tree for TreeLocal {
                 last_syncs,
                 root: Some(snap),
             };
-            drop(snap.save_to_file(&self.metadata_path));
-            log::info!("tree[{}]: snap saved", self.fs_tree);
+            match self.snap_access.save_snap(&snap, synced_remotes) {
+                Ok(()) => log::info!("tree[{}]: snap saved", self.fs_tree),
+                Err(err) => log::warn!("tree[{}]: cannot save snap: {err}", self.fs_tree),
+            }
         }
     }
 }
