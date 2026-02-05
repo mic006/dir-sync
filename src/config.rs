@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::generic::path_regex::{self, PathRegexBuilder};
 
 /// Default configuration path
-pub const DEFAULT_CFG_PATH: &str = "/data/develop/github/dir-sync/etc/dir-sync.conf.yaml"; // TODO: "/etc/dir-sync.conf.yaml";
+pub const DEFAULT_CFG_PATH: &str = "/etc/dir-sync.conf.yaml";
 
 /// Configuration reference, shared between all objects (read-only access)
 pub type ConfigRef = std::sync::Arc<Config>;

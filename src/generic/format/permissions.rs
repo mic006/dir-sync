@@ -15,7 +15,7 @@ pub fn format_file_type_and_permissions(entry: &MyDirEntry) -> String {
         Some(Specific::Regular(_)) => b'.',
         Some(Specific::Symlink(_)) => b'l',
         Some(Specific::Socket(_)) => b's',
-        None => todo!(),
+        None => b'?',
     };
 
     // standard permissions
