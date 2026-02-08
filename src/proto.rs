@@ -135,6 +135,7 @@ where
     /// Get current time as timestamp
     fn now() -> Self;
 
+    /// Compare 2 timestamps
     fn cmp(&self, other: &Self) -> Ordering;
 }
 

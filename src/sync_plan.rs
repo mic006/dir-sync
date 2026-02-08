@@ -8,6 +8,7 @@ use crate::generic::task_tracker::TaskTracker;
 use crate::proto::{MyDirEntry, MyDirEntryExt, TimestampExt as _};
 
 /// Synchronization mode
+#[derive(PartialEq)]
 pub enum SyncMode {
     /// Standard mode: use previous sync state to determine how to resolve changes
     /// If the ancestor is not common, no action is proposed
@@ -99,7 +100,44 @@ impl SyncCtx {
             }
         }
 
-        todo!();
+        if self.mode == SyncMode::Latest {
+            // Get the entry with the latest modification time
+            let mut latest_entry: Option<&MyDirEntry> = None;
+            let mut source_index = 0u8;
+            let mut conflict = false;
+            for (i, entry) in diff_entry.entries.iter().enumerate() {
+                if let Some(entry) = entry {
+                    if let Some(latest_entry_ref) = latest_entry {
+                        match latest_entry_ref.mtime.unwrap().cmp(&entry.mtime.unwrap()) {
+                            std::cmp::Ordering::Less => {
+                                // update latest_entry with latest
+                                latest_entry = Some(entry);
+                                source_index = i as u8;
+                                conflict = false;
+                            }
+                            std::cmp::Ordering::Equal => {
+                                // two entries with latest mtime shall be equal
+                                conflict =
+                                    conflict || !diff_entries(entry, latest_entry_ref).is_empty();
+                            }
+                            std::cmp::Ordering::Greater => {}
+                        }
+                    } else {
+                        // first existing entry
+                        latest_entry = Some(entry);
+                        source_index = i as u8;
+                    }
+                }
+            }
+
+            if !conflict {
+                // latest sync possible
+                diff_entry.sync_source_index = Some(source_index);
+                return Ok(());
+            }
+        }
+
+        Ok(())
     }
 
     /// Compare 2 entries to determine the common ancestor if any
@@ -130,5 +168,207 @@ impl SyncCtx {
                 .is_gt(),
             _ => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generic::task_tracker::tests::dummy_task_tracker;
+    use crate::proto::{DirectoryData, MyDirEntry, RegularData, Specific};
+    use prost_types::Timestamp;
+
+    fn create_file_entry(file_name: &str, size: u64, hash: u64, mtime_sec: i64) -> MyDirEntry {
+        MyDirEntry {
+            file_name: file_name.to_string(),
+            specific: Some(Specific::Regular(RegularData {
+                size,
+                hash: hash.to_be_bytes().to_vec(),
+            })),
+            permissions: 0o644,
+            uid: 1000,
+            gid: 1000,
+            mtime: Some(Timestamp {
+                seconds: mtime_sec,
+                nanos: 0,
+            }),
+        }
+    }
+
+    fn create_root_with_file(file: MyDirEntry) -> MyDirEntry {
+        MyDirEntry {
+            file_name: "root".to_string(),
+            specific: Some(Specific::Directory(DirectoryData {
+                content: vec![file],
+            })),
+            permissions: 0o755,
+            uid: 1000,
+            gid: 1000,
+            mtime: Some(Timestamp {
+                seconds: 0,
+                nanos: 0,
+            }),
+        }
+    }
+
+    #[test]
+    fn test_sync_plan_standard_no_prev() {
+        crate::generic::test::log_init();
+        let task_tracker = dummy_task_tracker();
+        let mut entries = vec![DiffEntry {
+            rel_path: "./file.txt".to_string(),
+            entries: vec![
+                Some(create_file_entry("file.txt", 10, 1, 100)),
+                Some(create_file_entry("file.txt", 20, 2, 200)),
+            ],
+            diff: crate::diff::DiffType::CONTENT,
+            sync_source_index: None,
+        }];
+
+        sync_plan(task_tracker, vec![], SyncMode::Standard, &mut entries).unwrap();
+        assert!(entries[0].sync_source_index.is_none());
+    }
+
+    #[test]
+    fn test_sync_plan_latest_simple() {
+        crate::generic::test::log_init();
+        let task_tracker = dummy_task_tracker();
+        let mut entries = vec![DiffEntry {
+            rel_path: "./file.txt".to_string(),
+            entries: vec![
+                Some(create_file_entry("file.txt", 10, 1, 100)),
+                Some(create_file_entry("file.txt", 20, 2, 200)),
+            ],
+            diff: crate::diff::DiffType::CONTENT,
+            sync_source_index: None,
+        }];
+
+        sync_plan(task_tracker, vec![], SyncMode::Latest, &mut entries).unwrap();
+        assert_eq!(entries[0].sync_source_index, Some(1));
+    }
+
+    #[test]
+    fn test_sync_plan_latest_conflict_same_mtime_diff_content() {
+        crate::generic::test::log_init();
+        let task_tracker = dummy_task_tracker();
+        let mut entries = vec![DiffEntry {
+            rel_path: "./file.txt".to_string(),
+            entries: vec![
+                Some(create_file_entry("file.txt", 10, 1, 200)),
+                Some(create_file_entry("file.txt", 20, 2, 200)),
+            ],
+            diff: crate::diff::DiffType::CONTENT,
+            sync_source_index: None,
+        }];
+
+        sync_plan(task_tracker, vec![], SyncMode::Latest, &mut entries).unwrap();
+        assert!(entries[0].sync_source_index.is_none());
+    }
+
+    #[test]
+    fn test_sync_plan_standard_update_one_side() {
+        crate::generic::test::log_init();
+        let task_tracker = dummy_task_tracker();
+        let prev = create_file_entry("file.txt", 10, 1, 100);
+        let current_1 = prev.clone();
+        let current_2 = create_file_entry("file.txt", 20, 2, 200);
+
+        let mut entries = vec![DiffEntry {
+            rel_path: "./file.txt".to_string(),
+            entries: vec![Some(current_1), Some(current_2)],
+            diff: crate::diff::DiffType::CONTENT,
+            sync_source_index: None,
+        }];
+
+        let prev_root = create_root_with_file(prev);
+
+        sync_plan(
+            task_tracker,
+            vec![prev_root.clone(), prev_root],
+            SyncMode::Standard,
+            &mut entries,
+        )
+        .unwrap();
+        assert_eq!(entries[0].sync_source_index, Some(1));
+    }
+
+    #[test]
+    fn test_sync_plan_standard_conflict() {
+        crate::generic::test::log_init();
+        let task_tracker = dummy_task_tracker();
+        let prev = create_file_entry("file.txt", 10, 1, 100);
+        let current_1 = create_file_entry("file.txt", 20, 2, 200);
+        let current_2 = create_file_entry("file.txt", 30, 3, 300);
+
+        let mut entries = vec![DiffEntry {
+            rel_path: "./file.txt".to_string(),
+            entries: vec![Some(current_1), Some(current_2)],
+            diff: crate::diff::DiffType::CONTENT,
+            sync_source_index: None,
+        }];
+
+        let prev_root = create_root_with_file(prev);
+
+        sync_plan(
+            task_tracker,
+            vec![prev_root.clone(), prev_root],
+            SyncMode::Standard,
+            &mut entries,
+        )
+        .unwrap();
+        assert!(entries[0].sync_source_index.is_none());
+    }
+
+    #[test]
+    fn test_sync_plan_standard_deletion() {
+        crate::generic::test::log_init();
+        let task_tracker = dummy_task_tracker();
+        let prev = create_file_entry("file.txt", 10, 1, 100);
+        let current_2 = prev.clone();
+
+        let mut entries = vec![DiffEntry {
+            rel_path: "./file.txt".to_string(),
+            entries: vec![None, Some(current_2)],
+            diff: crate::diff::DiffType::TYPE,
+            sync_source_index: None,
+        }];
+
+        let prev_root = create_root_with_file(prev);
+
+        sync_plan(
+            task_tracker,
+            vec![prev_root.clone(), prev_root],
+            SyncMode::Standard,
+            &mut entries,
+        )
+        .unwrap();
+        assert_eq!(entries[0].sync_source_index, Some(0));
+    }
+
+    #[test]
+    fn test_sync_plan_standard_older_update_ignored() {
+        crate::generic::test::log_init();
+        let task_tracker = dummy_task_tracker();
+        let prev = create_file_entry("file.txt", 10, 1, 200);
+        let current_1 = prev.clone();
+        let current_2 = create_file_entry("file.txt", 20, 2, 100);
+
+        let mut entries = vec![DiffEntry {
+            rel_path: "./file.txt".to_string(),
+            entries: vec![Some(current_1), Some(current_2)],
+            diff: crate::diff::DiffType::CONTENT | crate::diff::DiffType::MTIME,
+            sync_source_index: None,
+        }];
+
+        let prev_root = create_root_with_file(prev);
+
+        sync_plan(
+            task_tracker,
+            vec![prev_root.clone(), prev_root],
+            SyncMode::Standard,
+            &mut entries,
+        )
+        .unwrap();
+        assert!(entries[0].sync_source_index.is_none());
     }
 }
