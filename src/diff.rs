@@ -45,7 +45,8 @@ impl std::fmt::Display for DiffType {
 /// Compare 2 entries and determine difference
 ///
 /// mtime is compared only for regular files and symlinks
-fn diff_entries(a: &MyDirEntry, b: &MyDirEntry) -> DiffType {
+#[must_use]
+pub fn diff_entries(a: &MyDirEntry, b: &MyDirEntry) -> DiffType {
     let mut diff = DiffType::empty();
     let mut check_mtime = false;
 
@@ -95,11 +96,14 @@ fn diff_entries(a: &MyDirEntry, b: &MyDirEntry) -> DiffType {
 #[derive(Debug)]
 pub struct DiffEntry {
     /// relative path of entry
-    rel_path: String,
+    pub rel_path: String,
     /// entry from each input
-    entries: Vec<Option<MyDirEntry>>,
+    pub entries: Vec<Option<MyDirEntry>>,
     /// type of difference
-    diff: DiffType,
+    pub diff: DiffType,
+    /// index of the source tree = reference for the sync operation
+    /// None if sync is not determined yet
+    pub sync_source_index: Option<u8>,
 }
 impl std::fmt::Display for DiffEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -218,6 +222,7 @@ where
                         })
                         .collect(),
                     diff,
+                    sync_source_index: None,
                 };
                 log::debug!("diff: {diff_entry}");
                 diffs.push(diff_entry);

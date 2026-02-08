@@ -35,6 +35,7 @@ pub mod generic {
         pub mod tree;
     }
     pub mod fs;
+    pub mod iter;
     pub mod libc;
     pub mod path_regex;
     pub mod prost_stream;
@@ -44,6 +45,7 @@ pub mod generic {
 pub mod output;
 pub mod proto;
 pub mod snap;
+pub mod sync_plan;
 pub mod tree;
 pub mod tree_local;
 
@@ -66,6 +68,16 @@ struct Arg {
     /// Enable debug output
     #[arg(short, long)]
     debug: bool,
+    /// Resolve all unresolved conflicts by taking the latest file by modification time
+    /// CAUTION: use this option with care
+    /// - conflicting changes will be overridden
+    /// - deleted or moved files will be restored
+    #[clap(verbatim_doc_comment)]
+    #[arg(long)]
+    latest: bool,
+    /// Dry run: sync operations will be displayed but not executed
+    #[arg(short('n'), long)]
+    dry_run: bool,
     /// Directories to compare
     #[arg()]
     dirs: Vec<String>,

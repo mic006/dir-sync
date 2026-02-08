@@ -134,6 +134,8 @@ where
 {
     /// Get current time as timestamp
     fn now() -> Self;
+
+    fn cmp(&self, other: &Self) -> Ordering;
 }
 
 impl TimestampExt for Timestamp {
@@ -146,5 +148,11 @@ impl TimestampExt for Timestamp {
             seconds: d.as_secs() as i64,
             nanos: d.subsec_nanos() as i32,
         }
+    }
+
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.seconds
+            .cmp(&other.seconds)
+            .then(self.nanos.cmp(&other.nanos))
     }
 }
