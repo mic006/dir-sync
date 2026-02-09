@@ -284,6 +284,13 @@ impl Tree for TreeLocal {
     }
 }
 
+impl Drop for TreeLocal {
+    fn drop(&mut self) {
+        // ensure a completed snapshot is saved
+        self.save_snap(&[]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::tests::load_ut_cfg;

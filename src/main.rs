@@ -248,11 +248,7 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
     }
 
     // perform diff
-    let diffs = crate::diff::diff_trees(task_tracker, &ctx.trees, mode);
-
-    ctx.save_snaps(&[]);
-
-    let diffs = diffs?;
+    let diffs = crate::diff::diff_trees(task_tracker, &ctx.trees, mode)?;
 
     match mode {
         DiffMode::Status => {
@@ -282,7 +278,6 @@ async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTa
 
     let mut ctx = RunContext::new(&task_tracker, &arg)?;
     ctx.trees[0].wait_for_tree().await?;
-    ctx.save_snaps(&[]);
 
     Ok(TaskExit::MainTaskStopAppSuccess)
 }
