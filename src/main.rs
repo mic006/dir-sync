@@ -253,7 +253,9 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
     }
 
     // perform diff
-    let diffs = crate::diff::diff_trees(task_tracker, &ctx.trees, mode)?;
+    let diffs = crate::diff::diff_trees(task_tracker, &ctx.trees, mode);
+    ctx.save_snaps(false);
+    let diffs = diffs?;
 
     match mode {
         DiffMode::Status => {
@@ -303,6 +305,7 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
     crate::sync_plan::sync_plan(task_tracker, prev_sync_snaps, sync_mode, &mut diffs)?;
 
     if arg.dry_run {
+        ctx.save_snaps(false);
         let mut stdout = std::io::stdout();
         if diffs.is_empty() {
             let _ignored = writeln!(stdout, "No difference found between inputs");
@@ -315,6 +318,9 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
                 }
             }
         }
+    } else {
+        // TODO: perform sync operations
+        ctx.save_snaps(true);
     }
 
     Ok(TaskExit::MainTaskStopAppSuccess)
@@ -328,6 +334,7 @@ async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTa
 
     let mut ctx = RunContext::new(&task_tracker, &arg, false)?;
     ctx.trees[0].wait_for_tree().await?;
+    ctx.save_snaps(false);
 
     Ok(TaskExit::MainTaskStopAppSuccess)
 }
@@ -420,11 +427,9 @@ impl RunContext {
         )
     }
 
-    fn save_snaps(&mut self, synced_remotes: &[&str]) {
+    fn save_snaps(&mut self, sync: bool) {
         // parallelized: save snap of each tree
-        self.trees
-            .par_iter_mut()
-            .for_each(|t| t.save_snap(synced_remotes));
+        self.trees.par_iter_mut().for_each(|t| t.save_snap(sync));
     }
 }
 

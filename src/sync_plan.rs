@@ -153,15 +153,16 @@ impl SyncCtx {
     /// # Returns:
     /// - true when `new_entry` is None (deleted file)
     /// - true when `common_prev_entry` is None (new file)
-    /// - true when `new_entry` is more recent tha`common_prev_entry`
-    /// - false otherwise: `new_entry` is older tha`common_prev_entry`
+    /// - true when `new_entry` is more recent than `common_prev_entry`
+    /// - false otherwise: `new_entry` is older than `common_prev_entry`
     fn mtime_is_consistent(
         new_entry: Option<&MyDirEntry>,
         common_prev_entry: Option<&MyDirEntry>,
     ) -> bool {
         match (new_entry, common_prev_entry) {
             (Some(new_entry), Some(common_prev_entry)) => {
-                new_entry.mtime.cmp(&common_prev_entry.mtime).is_gt()
+                // allow TS equality for permission / ownership changes
+                new_entry.mtime.cmp(&common_prev_entry.mtime).is_ge()
             }
             _ => true,
         }
@@ -367,5 +368,35 @@ mod tests {
         )
         .unwrap();
         assert!(entries[0].sync_source_index.is_none());
+    }
+
+    #[test]
+    fn test_sync_plan_standard_update_permission() {
+        crate::generic::test::log_init();
+        let task_tracker = dummy_task_tracker();
+        let prev = create_file_entry("file.txt", 10, 1, 100);
+        let current_1 = prev.clone();
+        let current_2 = MyDirEntry {
+            permissions: 0o640,
+            ..prev.clone()
+        };
+
+        let mut entries = vec![DiffEntry {
+            rel_path: "./file.txt".to_string(),
+            entries: vec![Some(current_1), Some(current_2)],
+            diff: crate::diff::DiffType::PERMISSIONS,
+            sync_source_index: None,
+        }];
+
+        let prev_root = create_root_with_file(prev);
+
+        sync_plan(
+            task_tracker,
+            Some(vec![prev_root.clone(), prev_root]),
+            SyncMode::Standard,
+            &mut entries,
+        )
+        .unwrap();
+        assert_eq!(entries[0].sync_source_index, Some(1));
     }
 }

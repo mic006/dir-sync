@@ -26,7 +26,9 @@ pub trait Tree: TreeMetadata {
     fn get_fs_action_responder(&self) -> Receiver<ActionRsp>;
 
     /// Save snap file
-    fn save_snap(&mut self, synced_remotes: &[&str]);
+    ///
+    /// Save snapshot file, update sync information if `sync` is true
+    fn save_snap(&mut self, sync: bool);
 
     /// Get snapshot of the previous synchronization
     fn take_prev_sync_snap(&mut self) -> Option<MetadataSnap>;

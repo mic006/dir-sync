@@ -155,6 +155,8 @@ pub struct TreeLocal {
     metadata_state: LocalMetadataState,
     /// Syncs retrieved from the previous metadata snapshot
     last_syncs: BTreeMap<String, Timestamp>,
+    /// Other paths to perform synchronization with
+    sync_paths: Arc<Vec<String>>,
 }
 
 impl TreeLocal {
@@ -187,10 +189,13 @@ impl TreeLocal {
         // expecting a single result
         let (sender_snap, receiver_snap) = flume::bounded(1);
 
+        let sync_paths = Arc::new(sync_paths);
+
         task_tracker.spawn_blocking({
             let task_tracker = task_tracker.clone();
             let fs_tree = fs_tree.clone();
             let snap_access = snap_access.clone();
+            let sync_paths = sync_paths.clone();
             move || {
                 Self::walk_task(
                     task_tracker,
@@ -212,6 +217,7 @@ impl TreeLocal {
             fs_tree,
             metadata_state: LocalMetadataState::Processing(receiver_snap),
             last_syncs,
+            sync_paths,
         })
     }
 
@@ -221,7 +227,7 @@ impl TreeLocal {
         fs_tree: Arc<FsTree>,
         file_matcher: Option<FileMatcher>,
         prev_snap: Option<MyDirEntry>,
-        sync_paths: Vec<String>, // other paths to perform synchronization with
+        sync_paths: Arc<Vec<String>>, // other paths to perform synchronization with
         snap_access: SnapAccess,
         sender_snap: Sender<Box<WalkOutput>>,
     ) -> anyhow::Result<TaskExit> {
@@ -299,16 +305,18 @@ impl Tree for TreeLocal {
         todo!();
     }
 
-    fn save_snap(&mut self, synced_remotes: &[&str]) {
+    fn save_snap(&mut self, sync: bool) {
         if let LocalMetadataState::Received(output) =
             std::mem::replace(&mut self.metadata_state, LocalMetadataState::Terminated)
         {
             log::info!("tree[{}]: saving snap", self.fs_tree);
             // restore last_syncs from loaded snapshot
             let mut last_syncs = std::mem::take(&mut self.last_syncs);
-            // and update with synced remotes
-            for remote in synced_remotes {
-                last_syncs.insert(remote.to_string(), self.ts);
+            if sync {
+                // and update with synced remotes
+                for sync_path in self.sync_paths.iter() {
+                    last_syncs.insert(sync_path.clone(), self.ts);
+                }
             }
             // save metadata
             let snap = MetadataSnap {
@@ -317,7 +325,15 @@ impl Tree for TreeLocal {
                 last_syncs,
                 root: Some(output.snap),
             };
-            match self.snap_access.save_snap(&snap, synced_remotes) {
+            let synced_remotes = if sync {
+                self.sync_paths
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+            } else {
+                vec![]
+            };
+            match self.snap_access.save_snap(&snap, &synced_remotes) {
                 Ok(()) => log::info!("tree[{}]: snap saved", self.fs_tree),
                 Err(err) => log::warn!("tree[{}]: cannot save snap: {err}", self.fs_tree),
             }
@@ -336,7 +352,7 @@ impl Tree for TreeLocal {
 impl Drop for TreeLocal {
     fn drop(&mut self) {
         // ensure a completed snapshot is saved
-        self.save_snap(&[]);
+        self.save_snap(false);
     }
 }
 
