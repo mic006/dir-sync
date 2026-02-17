@@ -2,7 +2,7 @@
 
 use flume::{Receiver, Sender};
 
-use crate::proto::{ActionReq, ActionRsp, MyDirEntry};
+use crate::proto::{ActionReq, ActionRsp, MetadataSnap, MyDirEntry};
 
 /// Access to metadata of entries in the tree
 pub trait TreeMetadata {
@@ -27,6 +27,9 @@ pub trait Tree: TreeMetadata {
 
     /// Save snap file
     fn save_snap(&mut self, synced_remotes: &[&str]);
+
+    /// Get snapshot of the previous synchronization
+    fn take_prev_sync_snap(&mut self) -> Option<MetadataSnap>;
 }
 
 /// Consider a `Box<dyn Tree>` as a ref to `TreeMetadata`

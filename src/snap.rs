@@ -3,6 +3,7 @@
 use rayon::prelude::*;
 
 use std::collections::BTreeMap;
+use std::os::linux::fs::MetadataExt as _;
 use std::path::PathBuf;
 
 use prost_types::Timestamp;
@@ -22,6 +23,7 @@ const SNAP_TEMP_BASENAME: &str = "latest_tmp";
 const SNAP_EXT: &str = "snap.pb.bin.zst";
 
 /// Read/write access to metadata snapshots
+#[derive(Clone)]
 pub struct SnapAccess {
     /// Folder where metadata snapshots are stored
     folder_path: PathBuf,
@@ -61,6 +63,30 @@ impl SnapAccess {
     pub fn load_sync_snap(&self, sync_path: &str) -> Option<MetadataSnap> {
         let snap_path = self.snap_path(&Self::path_to_unique_id(sync_path));
         MetadataSnap::load_from_file(&snap_path).ok()
+    }
+
+    /// Load the common sync metadata snapshot, if available
+    ///
+    /// The returned snapshot matches the more recent synchronization for all the sync paths.
+    /// So it is actually the oldest available snapshot (because the associated sync path has not been synced since then).
+    ///
+    /// If one snapshot is missing, None is returned.
+    #[must_use]
+    pub fn load_common_sync_snap(&self, sync_paths: &[String]) -> Option<MetadataSnap> {
+        let mut oldest_snap: Option<(PathBuf, i64)> = None;
+        // find oldest snapshot, exit if missing snap file
+        for sync_path in sync_paths {
+            let snap_path = self.snap_path(&Self::path_to_unique_id(sync_path));
+            let metadata = snap_path.metadata().ok()?;
+            if let Some(oldest_snap) = &mut oldest_snap {
+                if metadata.st_mtime() < oldest_snap.1 {
+                    *oldest_snap = (snap_path, metadata.st_mtime());
+                }
+            } else {
+                oldest_snap = Some((snap_path, metadata.st_mtime()));
+            }
+        }
+        MetadataSnap::load_from_file(&oldest_snap?.0).ok()
     }
 
     /// Save metadata snapshot + create links for synced remotes

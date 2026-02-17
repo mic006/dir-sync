@@ -107,7 +107,20 @@ pub struct DiffEntry {
 }
 impl std::fmt::Display for DiffEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}  {}", self.diff, self.rel_path)
+        if f.alternate() {
+            // alternate mode = sync mode: display sync_source_index (start indexing at 1 for user readability)
+            write!(
+                f,
+                "[{}]  {}  {}",
+                self.sync_source_index
+                    .map_or(String::from("!"), |i| (i + 1).to_string()),
+                self.diff,
+                self.rel_path
+            )
+        } else {
+            // normal mode = diff mode
+            write!(f, "{}  {}", self.diff, self.rel_path)
+        }
     }
 }
 

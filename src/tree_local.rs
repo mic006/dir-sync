@@ -20,11 +20,19 @@ use crate::tree::{Tree, TreeMetadata};
 /// State for metadata
 enum LocalMetadataState {
     /// Walking of the directory is on-going, handler to get the result
-    Processing(Receiver<MyDirEntry>),
+    Processing(Receiver<Box<WalkOutput>>),
     /// Result is already available
-    Received(MyDirEntry),
+    Received(Box<WalkOutput>),
     /// Result has been consumed
     Terminated,
+}
+
+/// Output of the walk task
+struct WalkOutput {
+    /// Metadata snapshot of the tree
+    snap: MyDirEntry,
+    /// Previous sync snapshot for the tree, if any
+    prev_sync_snap: Option<MetadataSnap>,
 }
 
 /// Context for walking the tree
@@ -157,9 +165,10 @@ impl TreeLocal {
     pub fn spawn(
         config: ConfigRef,
         task_tracker: &TaskTracker,
-        path: &str,
-        ts: Timestamp,
-        file_matcher: Option<FileMatcher>,
+        path: &str,                        // path to walk
+        ts: Timestamp,                     // reference timestamp
+        file_matcher: Option<FileMatcher>, // filter for files to walk
+        sync_paths: Vec<String>,           // other paths to perform synchronization with
     ) -> anyhow::Result<Self> {
         let fs_tree = Arc::new(FsTree::new(path)?);
 
@@ -172,7 +181,7 @@ impl TreeLocal {
             .as_mut()
             .map(|snap| std::mem::take(&mut snap.last_syncs))
             .unwrap_or_default();
-        // extract snap content to speed the new snap
+        // extract snap content to speed up the new snap
         let prev_snap = prev_snap.and_then(|snap| snap.root);
 
         // expecting a single result
@@ -181,7 +190,18 @@ impl TreeLocal {
         task_tracker.spawn_blocking({
             let task_tracker = task_tracker.clone();
             let fs_tree = fs_tree.clone();
-            move || Self::walk_task(task_tracker, fs_tree, file_matcher, prev_snap, sender_snap)
+            let snap_access = snap_access.clone();
+            move || {
+                Self::walk_task(
+                    task_tracker,
+                    fs_tree,
+                    file_matcher,
+                    prev_snap,
+                    sync_paths,
+                    snap_access,
+                    sender_snap,
+                )
+            }
         })?;
 
         Ok(Self {
@@ -201,7 +221,9 @@ impl TreeLocal {
         fs_tree: Arc<FsTree>,
         file_matcher: Option<FileMatcher>,
         prev_snap: Option<MyDirEntry>,
-        sender_snap: Sender<MyDirEntry>,
+        sync_paths: Vec<String>, // other paths to perform synchronization with
+        snap_access: SnapAccess,
+        sender_snap: Sender<Box<WalkOutput>>,
     ) -> anyhow::Result<TaskExit> {
         log::info!("tree[{fs_tree}]: starting walk");
 
@@ -216,17 +238,36 @@ impl TreeLocal {
         ctx.walk_recursive(String::from("."), &mut snap, prev_snap)?;
 
         log::info!("tree[{fs_tree}]: walk completed");
-        sender_snap.send(snap)?;
+
+        let prev_sync_snap = (!sync_paths.is_empty())
+            .then(|| {
+                let prev_sync_snap = snap_access.load_common_sync_snap(&sync_paths);
+                log::info!(
+                    "tree[{fs_tree}]: previous sync snapshot {}",
+                    if prev_sync_snap.is_some() {
+                        "loaded"
+                    } else {
+                        "not found"
+                    }
+                );
+                prev_sync_snap
+            })
+            .flatten();
+
+        sender_snap.send(Box::new(WalkOutput {
+            snap,
+            prev_sync_snap,
+        }))?;
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 }
 
 impl TreeMetadata for TreeLocal {
     fn get_entry(&self, rel_path: &str) -> Option<&MyDirEntry> {
-        let LocalMetadataState::Received(snap) = &self.metadata_state else {
+        let LocalMetadataState::Received(output) = &self.metadata_state else {
             panic!("inconsistent state, call wait_for_tree() first");
         };
-        snap.get_entry(rel_path)
+        output.snap.get_entry(rel_path)
     }
 
     fn get_dir_content(&self, rel_path: &str) -> &[MyDirEntry] {
@@ -259,7 +300,7 @@ impl Tree for TreeLocal {
     }
 
     fn save_snap(&mut self, synced_remotes: &[&str]) {
-        if let LocalMetadataState::Received(snap) =
+        if let LocalMetadataState::Received(output) =
             std::mem::replace(&mut self.metadata_state, LocalMetadataState::Terminated)
         {
             log::info!("tree[{}]: saving snap", self.fs_tree);
@@ -274,12 +315,20 @@ impl Tree for TreeLocal {
                 ts: Some(self.ts),
                 path: self.path.clone(),
                 last_syncs,
-                root: Some(snap),
+                root: Some(output.snap),
             };
             match self.snap_access.save_snap(&snap, synced_remotes) {
                 Ok(()) => log::info!("tree[{}]: snap saved", self.fs_tree),
                 Err(err) => log::warn!("tree[{}]: cannot save snap: {err}", self.fs_tree),
             }
+        }
+    }
+
+    fn take_prev_sync_snap(&mut self) -> Option<MetadataSnap> {
+        if let LocalMetadataState::Received(output) = &mut self.metadata_state {
+            output.prev_sync_snap.take()
+        } else {
+            None
         }
     }
 }
@@ -337,6 +386,7 @@ mod tests {
             test_dir_path.checked_as_str()?,
             ts,
             file_matcher,
+            vec![],
         )?;
         drop(task_tracker);
 

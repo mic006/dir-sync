@@ -17,8 +17,9 @@ use crate::diff::DiffMode;
 use crate::generic::fs::{MessageExt as _, PathExt as _};
 use crate::generic::libc::reset_sigpipe;
 use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
-use crate::proto::{MetadataSnap, TimestampExt as _};
+use crate::proto::{MetadataSnap, MyDirEntry, TimestampExt as _};
 use crate::snap::list_snaps_stdout;
+use crate::sync_plan::SyncMode;
 use crate::tree::Tree;
 use crate::tree_local::TreeLocal;
 
@@ -221,6 +222,10 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
             task_tracker_main
                 .spawn(async move { diff_main(task_tracker, arg, DiffMode::Output).await })?;
         }
+        RunMode::SyncBatch => {
+            let task_tracker = task_tracker_main.tracker();
+            task_tracker_main.spawn(async move { sync_main(task_tracker, arg).await })?;
+        }
         RunMode::RefreshMetadataSnap => {
             let task_tracker = task_tracker_main.tracker();
             task_tracker_main
@@ -241,7 +246,7 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
     );
 
     // spawn all trees
-    let mut ctx = RunContext::new(&task_tracker, &arg)?;
+    let mut ctx = RunContext::new(&task_tracker, &arg, false)?;
     // wait for tree walk completion
     for tree in &mut ctx.trees {
         tree.wait_for_tree().await?;
@@ -270,13 +275,58 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
     }
 }
 
+async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
+    anyhow::ensure!(
+        arg.dirs.len() >= 2,
+        "Sync mode: expects at least 2 directories"
+    );
+
+    // spawn all trees
+    let mut ctx = RunContext::new(&task_tracker, &arg, true)?;
+    // wait for tree walk completion
+    for tree in &mut ctx.trees {
+        tree.wait_for_tree().await?;
+    }
+
+    // perform diff
+    let mut diffs = crate::diff::diff_trees(task_tracker.clone(), &ctx.trees, DiffMode::Output)?;
+
+    // get prev_snaps from all trees
+    let prev_sync_snaps = ctx.get_prev_sync_snaps();
+
+    // determine sync plan
+    let sync_mode = if arg.latest {
+        SyncMode::Latest
+    } else {
+        SyncMode::Standard
+    };
+    crate::sync_plan::sync_plan(task_tracker, prev_sync_snaps, sync_mode, &mut diffs)?;
+
+    if arg.dry_run {
+        let mut stdout = std::io::stdout();
+        if diffs.is_empty() {
+            let _ignored = writeln!(stdout, "No difference found between inputs");
+        } else {
+            // print differences with sync source
+            for diff in diffs {
+                if writeln!(stdout, "{diff:#}").is_err() {
+                    // stdout has been closed, stop
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(TaskExit::MainTaskStopAppSuccess)
+}
+
 async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
     anyhow::ensure!(
         arg.dirs.len() == 1,
         "RefreshMetadataSnap mode: expects a single directory"
     );
 
-    let mut ctx = RunContext::new(&task_tracker, &arg)?;
+    let mut ctx = RunContext::new(&task_tracker, &arg, false)?;
     ctx.trees[0].wait_for_tree().await?;
 
     Ok(TaskExit::MainTaskStopAppSuccess)
@@ -295,7 +345,7 @@ struct RunContext {
 }
 
 impl RunContext {
-    fn new(task_tracker: &TaskTracker, arg: &Arg) -> anyhow::Result<Self> {
+    fn new(task_tracker: &TaskTracker, arg: &Arg, sync_mode: bool) -> anyhow::Result<Self> {
         let config = Arc::new(Config::from_file(None)?);
         let file_matcher = config.get_file_matcher(arg.profile.as_deref())?;
         let ts = Timestamp::now();
@@ -306,13 +356,27 @@ impl RunContext {
             ts,
             trees: Vec::with_capacity(arg.dirs.len()),
         };
-        for dir in &arg.dirs {
-            instance.spawn_tree(task_tracker, dir)?;
+        for (index, dir) in arg.dirs.iter().enumerate() {
+            let sync_paths = if sync_mode {
+                arg.dirs
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, d)| if i == index { None } else { Some(d.clone()) })
+                    .collect()
+            } else {
+                vec![]
+            };
+            instance.spawn_tree(task_tracker, dir, sync_paths)?;
         }
         Ok(instance)
     }
 
-    fn spawn_tree(&mut self, task_tracker: &TaskTracker, dir: &str) -> anyhow::Result<()> {
+    fn spawn_tree(
+        &mut self,
+        task_tracker: &TaskTracker,
+        dir: &str,
+        sync_paths: Vec<String>,
+    ) -> anyhow::Result<()> {
         use std::sync::LazyLock;
         static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+):(.+)$").unwrap());
         if let Some(_captures) = RE.captures(dir) {
@@ -327,10 +391,33 @@ impl RunContext {
                 &dir,
                 self.ts,
                 self.file_matcher.clone(),
+                sync_paths,
             )?);
             self.trees.push(tree);
         }
         Ok(())
+    }
+
+    fn get_prev_sync_snaps(&mut self) -> Option<Vec<MyDirEntry>> {
+        let prev_sync_snaps = self
+            .trees
+            .iter_mut()
+            .map(|t| t.take_prev_sync_snap())
+            .collect::<Option<Vec<_>>>()?;
+
+        // ensure all snaps refer to the same timestamp
+        let mut it = prev_sync_snaps.iter();
+        let first = it.next()?;
+        if it.any(|snap| snap.ts != first.ts) {
+            return None;
+        }
+
+        Some(
+            prev_sync_snaps
+                .into_iter()
+                .map(|snap| snap.root.unwrap())
+                .collect(),
+        )
     }
 
     fn save_snaps(&mut self, synced_remotes: &[&str]) {

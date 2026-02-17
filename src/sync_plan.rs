@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use crate::diff::{DiffEntry, diff_entries};
 use crate::generic::iter::CommonValueByExt as _;
 use crate::generic::task_tracker::TaskTracker;
-use crate::proto::{MyDirEntry, MyDirEntryExt, TimestampExt as _};
+use crate::proto::{MyDirEntry, MyDirEntryExt, TimestampOrd as _};
 
 /// Synchronization mode
 #[derive(PartialEq)]
@@ -27,7 +27,7 @@ pub enum SyncMode {
 /// - early exit
 pub fn sync_plan(
     task_tracker: TaskTracker,
-    prev_snaps: Vec<MyDirEntry>, // may be empty if there is no snapshot with same ts available for all trees
+    prev_snaps: Option<Vec<MyDirEntry>>,
     mode: SyncMode,
     entries: &mut [DiffEntry],
 ) -> anyhow::Result<()> {
@@ -42,7 +42,7 @@ pub fn sync_plan(
 struct SyncCtx {
     task_tracker: TaskTracker,
     /// Previous snapshots of the trees, at the same timestamp (last synchronization)
-    prev_snaps: Vec<MyDirEntry>,
+    prev_snaps: Option<Vec<MyDirEntry>>,
     mode: SyncMode,
 }
 impl SyncCtx {
@@ -62,9 +62,8 @@ impl SyncCtx {
         self.task_tracker.get_shutdown_req_as_result()?;
 
         // standard sync: need a common ancestor
-        if !self.prev_snaps.is_empty()
-            && let Some(common_prev_entry) = self
-                .prev_snaps
+        if let Some(prev_snaps) = &self.prev_snaps
+            && let Some(common_prev_entry) = prev_snaps
                 .iter()
                 .map(|e| e.get_entry(&diff_entry.rel_path))
                 .common_value_by(|a, b| Self::are_same_entries(*a, *b))
@@ -108,7 +107,7 @@ impl SyncCtx {
             for (i, entry) in diff_entry.entries.iter().enumerate() {
                 if let Some(entry) = entry {
                     if let Some(latest_entry_ref) = latest_entry {
-                        match latest_entry_ref.mtime.unwrap().cmp(&entry.mtime.unwrap()) {
+                        match latest_entry_ref.mtime.cmp(&entry.mtime) {
                             std::cmp::Ordering::Less => {
                                 // update latest_entry with latest
                                 latest_entry = Some(entry);
@@ -161,11 +160,9 @@ impl SyncCtx {
         common_prev_entry: Option<&MyDirEntry>,
     ) -> bool {
         match (new_entry, common_prev_entry) {
-            (Some(new_entry), Some(common_prev_entry)) => new_entry
-                .mtime
-                .unwrap()
-                .cmp(&common_prev_entry.mtime.unwrap())
-                .is_gt(),
+            (Some(new_entry), Some(common_prev_entry)) => {
+                new_entry.mtime.cmp(&common_prev_entry.mtime).is_gt()
+            }
             _ => true,
         }
     }
@@ -225,7 +222,7 @@ mod tests {
             sync_source_index: None,
         }];
 
-        sync_plan(task_tracker, vec![], SyncMode::Standard, &mut entries).unwrap();
+        sync_plan(task_tracker, None, SyncMode::Standard, &mut entries).unwrap();
         assert!(entries[0].sync_source_index.is_none());
     }
 
@@ -243,7 +240,7 @@ mod tests {
             sync_source_index: None,
         }];
 
-        sync_plan(task_tracker, vec![], SyncMode::Latest, &mut entries).unwrap();
+        sync_plan(task_tracker, None, SyncMode::Latest, &mut entries).unwrap();
         assert_eq!(entries[0].sync_source_index, Some(1));
     }
 
@@ -261,7 +258,7 @@ mod tests {
             sync_source_index: None,
         }];
 
-        sync_plan(task_tracker, vec![], SyncMode::Latest, &mut entries).unwrap();
+        sync_plan(task_tracker, None, SyncMode::Latest, &mut entries).unwrap();
         assert!(entries[0].sync_source_index.is_none());
     }
 
@@ -284,7 +281,7 @@ mod tests {
 
         sync_plan(
             task_tracker,
-            vec![prev_root.clone(), prev_root],
+            Some(vec![prev_root.clone(), prev_root]),
             SyncMode::Standard,
             &mut entries,
         )
@@ -311,7 +308,7 @@ mod tests {
 
         sync_plan(
             task_tracker,
-            vec![prev_root.clone(), prev_root],
+            Some(vec![prev_root.clone(), prev_root]),
             SyncMode::Standard,
             &mut entries,
         )
@@ -337,7 +334,7 @@ mod tests {
 
         sync_plan(
             task_tracker,
-            vec![prev_root.clone(), prev_root],
+            Some(vec![prev_root.clone(), prev_root]),
             SyncMode::Standard,
             &mut entries,
         )
@@ -364,7 +361,7 @@ mod tests {
 
         sync_plan(
             task_tracker,
-            vec![prev_root.clone(), prev_root],
+            Some(vec![prev_root.clone(), prev_root]),
             SyncMode::Standard,
             &mut entries,
         )

@@ -134,9 +134,6 @@ where
 {
     /// Get current time as timestamp
     fn now() -> Self;
-
-    /// Compare 2 timestamps
-    fn cmp(&self, other: &Self) -> Ordering;
 }
 
 impl TimestampExt for Timestamp {
@@ -150,10 +147,22 @@ impl TimestampExt for Timestamp {
             nanos: d.subsec_nanos() as i32,
         }
     }
+}
 
+pub trait TimestampOrd {
+    fn cmp(&self, other: &Self) -> Ordering;
+}
+
+impl TimestampOrd for Timestamp {
     fn cmp(&self, other: &Self) -> Ordering {
         self.seconds
             .cmp(&other.seconds)
             .then(self.nanos.cmp(&other.nanos))
+    }
+}
+// Timestamps are put into in a message, but are always set
+impl TimestampOrd for Option<Timestamp> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.unwrap().cmp(other.as_ref().unwrap())
     }
 }
