@@ -1,8 +1,13 @@
 //! Generic interface for one input of `dir-sync`
 
+use std::sync::Arc;
+
 use flume::{Receiver, Sender};
 
 use crate::proto::{ActionReq, ActionRsp, MetadataSnap, MyDirEntry};
+
+pub type ActionReqSender = Sender<Arc<ActionReq>>;
+pub type ActionRspReceiver = Receiver<ActionRsp>;
 
 /// Access to metadata of entries in the tree
 pub trait TreeMetadata {
@@ -20,10 +25,10 @@ pub trait Tree: TreeMetadata {
     async fn wait_for_tree(&mut self) -> anyhow::Result<()>;
 
     /// Get sender to send FS action requests
-    fn get_fs_action_requester(&self) -> Sender<ActionReq>;
+    fn get_fs_action_requester(&self) -> ActionReqSender;
 
     /// Get receiver to get FS action responses
-    fn get_fs_action_responder(&self) -> Receiver<ActionRsp>;
+    fn get_fs_action_responder(&self) -> ActionRspReceiver;
 
     /// Save snap file
     ///

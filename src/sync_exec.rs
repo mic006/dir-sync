@@ -3,13 +3,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use flume::Sender;
+use futures::StreamExt as _;
+use futures::stream::SelectAll;
+
 use crate::diff::{self, DiffEntry};
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
+use crate::proto::action::FileWriteReq;
 use crate::proto::{
     ActionReq, MyDirEntry, MyDirEntryExt as _, Specific,
     action::{DeleteEntryReq, FileReadReq, UpdateMetadataReq},
 };
-use crate::tree::Tree;
+use crate::tree::{ActionReqSender, ActionRspReceiver, Tree};
 
 /// Execute actions to synchronize the trees
 ///
@@ -48,7 +53,7 @@ struct SyncExecCtx<'a> {
     /// list of diff/sync entries
     diff_entries: &'a [DiffEntry],
     /// Send actions to each tree
-    tree_senders: Arc<Vec<flume::Sender<ActionReq>>>,
+    tree_senders: Arc<Vec<ActionReqSender>>,
     /// Indexes of `diff_entries` to delete
     act_delete: Vec<usize>,
     /// Files to update (metadata and/or content), per source tree
@@ -185,7 +190,7 @@ impl<'a> SyncExecCtx<'a> {
                         rel_path: diff_entry.rel_path.clone(),
                     })
                 };
-                self.tree_senders[dst_idx].send(delete_act)?;
+                self.tree_senders[dst_idx].send(Arc::new(delete_act))?;
             }
         }
         Ok(())
@@ -197,23 +202,22 @@ impl<'a> SyncExecCtx<'a> {
 
         if ctx.need_data_read {
             // get file content from source tree
-            self.tree_senders[src_idx].send(ActionReq::ReadFile(FileReadReq {
+            self.tree_senders[src_idx].send(Arc::new(ActionReq::ReadFile(FileReadReq {
                 rel_path: diff_entry.rel_path.clone(),
-            }))?;
+            })))?;
             // received data will be forwarded to destination trees
         }
 
         if ctx.metadata_destination_bitmap != 0 {
             let src_entry = diff_entry.entries[src_idx].as_ref().unwrap();
+            let update_act = Arc::new(ActionReq::CreateUpdateMetadata(UpdateMetadataReq {
+                rel_path: diff_entry.rel_path.clone(),
+                metadata: Some(src_entry.clone()),
+            }));
             // update metadata on destination trees
             for dst_idx in 0..self.trees.len() {
                 if (ctx.metadata_destination_bitmap & (1 << dst_idx)) != 0 {
-                    self.tree_senders[dst_idx].send(ActionReq::CreateUpdateMetadata(
-                        UpdateMetadataReq {
-                            rel_path: diff_entry.rel_path.clone(),
-                            metadata: Some(src_entry.clone()),
-                        },
-                    ))?;
+                    self.tree_senders[dst_idx].send(update_act.clone())?;
                 }
             }
         }
@@ -221,8 +225,59 @@ impl<'a> SyncExecCtx<'a> {
         Ok(())
     }
 
-    /// Task to forward received data from source tree to destination trees
-    async fn data_forward_task() -> anyhow::Result<TaskExit> {
-        todo!();
+    /// Task to handle incoming streams from all trees
+    ///
+    /// - forward received data from source tree to destination trees
+    /// - log errors reported by trees
+    /// - forward `end_marker` notifications
+    async fn handle_incoming_streams_task(
+        tree_receivers: Vec<ActionRspReceiver>,
+        tree_senders: Arc<Vec<ActionReqSender>>,
+        end_marker_notif_sender: Sender<usize>,
+        file_data_ctx: Arc<HashMap<String, FileDataCtx>>,
+    ) -> anyhow::Result<TaskExit> {
+        let mut combined_stream = SelectAll::new();
+        for (src_idx, receiver) in tree_receivers.into_iter().enumerate() {
+            combined_stream.push(receiver.into_stream().map(move |event| (src_idx, event)));
+        }
+
+        while let Some((src_idx, event)) = combined_stream.next().await {
+            match event {
+                crate::proto::ActionRsp::EndMarker(_) => end_marker_notif_sender.send(src_idx)?,
+                crate::proto::ActionRsp::Error(error_rsp) => {
+                    log::warn!("sync_exec[{src_idx}]: {error_rsp:?}");
+                }
+                crate::proto::ActionRsp::FileData(file_read_rsp) => {
+                    // prepare data write request
+                    let file_ctx = file_data_ctx.get(&file_read_rsp.rel_path).unwrap();
+                    let file_size = {
+                        let Some(Specific::Regular(reg_data)) = &file_ctx.entry.specific else {
+                            unreachable!()
+                        };
+                        reg_data.size
+                    };
+                    let size = (file_read_rsp.offset == 0).then_some(file_size);
+                    let metadata = (file_read_rsp.offset + file_read_rsp.data.len() as u64
+                        == file_size)
+                        .then(|| file_ctx.entry.clone());
+                    let file_write_req = Arc::new(ActionReq::CreateUpdateFile(FileWriteReq {
+                        rel_path: file_read_rsp.rel_path,
+                        offset: file_read_rsp.offset,
+                        data: file_read_rsp.data,
+                        size,
+                        metadata,
+                    }));
+
+                    // forward received data to destination trees
+                    for dst_idx in 0..tree_senders.len() {
+                        if (file_ctx.destination_bitmap & (1 << dst_idx)) != 0 {
+                            tree_senders[dst_idx].send(file_write_req.clone())?;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 }

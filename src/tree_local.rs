@@ -11,11 +11,9 @@ use prost_types::Timestamp;
 use crate::config::{ConfigRef, FileMatcher};
 use crate::generic::file::FsTree;
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
-use crate::proto::{
-    ActionReq, ActionRsp, DirectoryData, MetadataSnap, MyDirEntry, MyDirEntryExt as _, Specific,
-};
+use crate::proto::{DirectoryData, MetadataSnap, MyDirEntry, MyDirEntryExt as _, Specific};
 use crate::snap::SnapAccess;
-use crate::tree::{Tree, TreeMetadata};
+use crate::tree::{ActionReqSender, ActionRspReceiver, Tree, TreeMetadata};
 
 /// State for metadata
 enum LocalMetadataState {
@@ -297,11 +295,11 @@ impl Tree for TreeLocal {
         Ok(())
     }
 
-    fn get_fs_action_requester(&self) -> Sender<ActionReq> {
+    fn get_fs_action_requester(&self) -> ActionReqSender {
         todo!();
     }
 
-    fn get_fs_action_responder(&self) -> Receiver<ActionRsp> {
+    fn get_fs_action_responder(&self) -> ActionRspReceiver {
         todo!();
     }
 
