@@ -46,6 +46,7 @@ pub mod generic {
 pub mod output;
 pub mod proto;
 pub mod snap;
+pub mod sync_exec;
 pub mod sync_plan;
 pub mod tree;
 pub mod tree_local;

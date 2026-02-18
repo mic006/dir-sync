@@ -20,8 +20,7 @@ pub enum SyncMode {
 
 /// Plan actions to synchronize the trees
 ///
-/// When successful, the returned vector has the same length as the input `diff_entries`,
-/// and each `SyncEntry` matches the associated `DiffEntry`.
+/// `DiffEntry` are updated when synchronization source is determined.
 ///
 /// # Errors
 /// - early exit
@@ -31,7 +30,7 @@ pub fn sync_plan(
     mode: SyncMode,
     entries: &mut [DiffEntry],
 ) -> anyhow::Result<()> {
-    let ctx = SyncCtx {
+    let ctx = SyncPlanCtx {
         task_tracker,
         prev_snaps,
         mode,
@@ -39,13 +38,13 @@ pub fn sync_plan(
     ctx.sync_plan(entries)
 }
 
-struct SyncCtx {
+struct SyncPlanCtx {
     task_tracker: TaskTracker,
     /// Previous snapshots of the trees, at the same timestamp (last synchronization)
     prev_snaps: Option<Vec<MyDirEntry>>,
     mode: SyncMode,
 }
-impl SyncCtx {
+impl SyncPlanCtx {
     fn sync_plan(&self, entries: &mut [DiffEntry]) -> anyhow::Result<()> {
         log::info!("sync_plan: starting");
         // parallelized: process each diff entry and generate the matching sync entry
