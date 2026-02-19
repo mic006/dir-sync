@@ -40,6 +40,9 @@ where
     /// Report whether this entry represents a directory
     fn is_dir(&self) -> bool;
 
+    /// Report whether this entry represents a symlink
+    fn is_symlink(&self) -> bool;
+
     /// Get one entry in the tree
     fn get_entry(&self, rel_path: &str) -> Option<&MyDirEntry>;
 
@@ -63,6 +66,10 @@ impl MyDirEntryExt for MyDirEntry {
 
     fn is_dir(&self) -> bool {
         matches!(self.specific, Some(Specific::Directory(_)))
+    }
+
+    fn is_symlink(&self) -> bool {
+        matches!(self.specific, Some(Specific::Symlink(_)))
     }
 
     fn get_entry(&self, rel_path: &str) -> Option<&MyDirEntry> {

@@ -3,17 +3,31 @@
 use rayon::prelude::*;
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use flume::{Receiver, Sender};
 use prost_types::Timestamp;
 
 use crate::config::{ConfigRef, FileMatcher};
-use crate::generic::file::FsTree;
+use crate::diff::{self, DiffType};
+use crate::generic::file::{FsFile, FsTree};
+use crate::generic::fs::PathExt as _;
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
-use crate::proto::{DirectoryData, MetadataSnap, MyDirEntry, MyDirEntryExt as _, Specific};
+use crate::proto::action::FileReadRsp;
+use crate::proto::{
+    ActionReq, ActionRsp, DirectoryData, MetadataSnap, MyDirEntry, MyDirEntryExt as _,
+    PROTO_NULL_VALUE, Specific,
+    action::{DeleteEntryReq, ErrorRsp, FileReadReq, FileWriteReq, UpdateMetadataReq},
+};
 use crate::snap::SnapAccess;
 use crate::tree::{ActionReqSender, ActionRspReceiver, Tree, TreeMetadata};
+
+/// Temporary file used by dir-sync to update a file
+///
+/// The file is firstly created using this temp name, updated with data + metadata,
+/// then renamed to its final name (potentially overwriting an existing file atomically)
+const TEMP_FILE: &str = ".dir_sync.tmp";
 
 /// State for metadata
 enum LocalMetadataState {
@@ -52,6 +66,15 @@ impl WalkCtx {
         log::debug!("tree[{}]: entering {rel_path}", self.fs_tree);
 
         let mut entries = self.fs_tree.walk_dir(&rel_path, |p| self.ignore(p))?;
+        // delete the tempfile left over from a previous sync
+        entries.retain(|e| {
+            if e.file_name == TEMP_FILE {
+                let _ignored = self.fs_tree.remove_file(&format!("{rel_path}/{TEMP_FILE}"));
+                false
+            } else {
+                true
+            }
+        });
         entries.sort_by(MyDirEntry::cmp);
 
         let mut subdirs = Vec::with_capacity(entries.len());
@@ -134,6 +157,262 @@ impl WalkCtx {
         } else {
             false
         }
+    }
+}
+
+/// Context tracking a regular file being created
+struct OngoingWriteFile {
+    /// File handle
+    f: FsFile,
+    /// Current offset
+    offset: u64,
+    /// Target relative path
+    rel_path: String,
+}
+
+/// Context to execute filesystem actions
+struct ActionCtx {
+    fs_tree: Arc<FsTree>,
+    receiver: Receiver<Arc<ActionReq>>,
+    sender: Sender<ActionRsp>,
+    read_buf_size: usize,
+    ongoing_write_file: Option<OngoingWriteFile>,
+}
+impl ActionCtx {
+    async fn task(&mut self) -> anyhow::Result<TaskExit> {
+        while let Ok(req) = self.receiver.recv_async().await {
+            let res = match &*req {
+                ActionReq::EndMarker(_) => {
+                    self.sender
+                        .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                        .await?;
+                    Ok(())
+                }
+                ActionReq::DeleteFile(req) => {
+                    self.delete_file(req).map_err(|err| (&req.rel_path, err))
+                }
+                ActionReq::DeleteDir(req) => {
+                    self.delete_dir(req).map_err(|err| (&req.rel_path, err))
+                }
+                ActionReq::CreateUpdateMetadata(req) => self
+                    .create_update_metadata(req)
+                    .map_err(|err| (&req.rel_path, err)),
+                ActionReq::CreateUpdateFile(req) => {
+                    self.create_update_file(req).await.map_err(|err| {
+                        // for any error, drop the ongoing file
+                        self.ongoing_write_file = None;
+                        (&req.rel_path, err)
+                    })
+                }
+                ActionReq::ReadFile(req) => self
+                    .read_file(req)
+                    .await
+                    .map_err(|err| (&req.rel_path, err)),
+            };
+            if let Err((rel_path, err)) = res {
+                self.sender
+                    .send_async(ActionRsp::Error(ErrorRsp {
+                        rel_path: rel_path.clone(),
+                        message: err.to_string(),
+                    }))
+                    .await?;
+            }
+        }
+
+        Ok(TaskExit::SecondaryTaskKeepRunning)
+    }
+
+    fn delete_file(&self, req: &DeleteEntryReq) -> anyhow::Result<()> {
+        self.fs_tree.remove_file(&req.rel_path)
+    }
+
+    fn delete_dir(&self, req: &DeleteEntryReq) -> anyhow::Result<()> {
+        self.fs_tree.remove_dir(&req.rel_path)
+    }
+
+    fn create_update_metadata(&self, req: &UpdateMetadataReq) -> anyhow::Result<()> {
+        let current = self.fs_tree.stat(&req.rel_path).ok();
+        let new = req.metadata.as_ref().unwrap();
+        let diff = current.map_or(DiffType::all(), |current| diff::diff_entries(&current, new));
+
+        if diff.intersects(DiffType::TYPE | DiffType::CONTENT) {
+            // create entry as tmp file, set metadata and rename it to final name
+
+            let mut temp_file = PathBuf::from(&req.rel_path);
+            temp_file.set_file_name(TEMP_FILE);
+            let temp_file = temp_file.checked_as_str()?;
+            match new.specific.as_ref().unwrap() {
+                Specific::Directory(_) => {
+                    self.fs_tree.mkdir(temp_file)?;
+                    self.set_metadata_and_rename(temp_file, &req.rel_path, new)?;
+                }
+                Specific::Symlink(target) => {
+                    self.fs_tree.symlink(temp_file, target)?;
+                    self.set_metadata_and_rename(temp_file, &req.rel_path, new)?;
+                }
+                Specific::Regular(reg_data) => {
+                    anyhow::ensure!(
+                        reg_data.size == 0,
+                        "internal error, create_update_metadata cannot create regular files with content"
+                    );
+                    let parent = Path::new(&req.rel_path)
+                        .parent()
+                        .unwrap()
+                        .checked_as_str()?;
+                    let f = self.fs_tree.create_tmp(parent, 0)?;
+                    self.finalize_regular_file(f, &req.rel_path, new)?;
+                }
+                _ => anyhow::bail!("unsupported file type"),
+            }
+        } else {
+            // update metadata only on the existing entry
+            if diff.contains(DiffType::PERMISSIONS) {
+                self.fs_tree.chmod(&req.rel_path, new.permissions)?;
+            }
+            if diff.contains(DiffType::UID_GID) {
+                self.fs_tree.chown(&req.rel_path, new.uid, new.gid)?;
+            }
+            if !new.is_dir() && diff.contains(DiffType::MTIME) {
+                self.fs_tree
+                    .set_mtime(&req.rel_path, new.mtime.as_ref().unwrap())?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn create_update_file(&mut self, req: &FileWriteReq) -> anyhow::Result<()> {
+        if req.offset == 0 {
+            // first data segment, need to create the file
+            if let Some(ongoing_write_file) = self.ongoing_write_file.take() {
+                self.sender
+                    .send_async(ActionRsp::Error(ErrorRsp {
+                        rel_path: ongoing_write_file.rel_path,
+                        message: "create_update_file: new file received while previous one has not been finalized".into(),
+                    }))
+                    .await?;
+            }
+            let parent = Path::new(&req.rel_path)
+                .parent()
+                .unwrap()
+                .checked_as_str()?;
+            let f = self.fs_tree.create_tmp(parent, req.size.unwrap())?;
+            self.ongoing_write_file = Some(OngoingWriteFile {
+                f,
+                offset: 0,
+                rel_path: req.rel_path.clone(),
+            });
+        } else {
+            // subsequent segment - check consistency
+            let Some(ongoing_write_file) = &self.ongoing_write_file else {
+                anyhow::bail!("create_update_file: missing first segment to create file");
+            };
+            anyhow::ensure!(
+                ongoing_write_file.rel_path == req.rel_path,
+                "create_update_file: inconsistent relative path"
+            );
+            anyhow::ensure!(
+                ongoing_write_file.offset == req.offset,
+                "create_update_file: inconsistent file offset"
+            );
+        }
+
+        let ongoing_write_file = self.ongoing_write_file.as_mut().unwrap();
+
+        // write data
+        ongoing_write_file.f.write(&req.data)?;
+        ongoing_write_file.offset += req.data.len() as u64;
+
+        if let Some(metadata) = &req.metadata {
+            // last segment, finalize file
+            let ongoing_write_file = self.ongoing_write_file.take().unwrap();
+
+            // check file size and data checksum
+            let Some(Specific::Regular(regular_data)) = &metadata.specific else {
+                anyhow::bail!("create_update_file: invalid metadata");
+            };
+            let file_size = ongoing_write_file.f.file_size()?;
+            anyhow::ensure!(
+                file_size == regular_data.size,
+                "create_update_file: inconsistent file size"
+            );
+            let hash = ongoing_write_file.f.compute_hash()?;
+            anyhow::ensure!(
+                hash.as_bytes() == &regular_data.hash[..],
+                "create_update_file: inconsistent hash"
+            );
+
+            // finalize file
+            self.finalize_regular_file(ongoing_write_file.f, &req.rel_path, metadata)?;
+        }
+
+        Ok(())
+    }
+
+    async fn read_file(&self, req: &FileReadReq) -> anyhow::Result<()> {
+        let f = self.fs_tree.open(&req.rel_path)?;
+
+        // read file content by segments
+        let mut offset = 0;
+        loop {
+            let mut data = Vec::with_capacity(self.read_buf_size);
+            let read = f.read(&mut data)?;
+            if read == 0 {
+                break; // end of file reached
+            }
+            // send segment
+            self.sender
+                .send_async(ActionRsp::FileData(FileReadRsp {
+                    rel_path: req.rel_path.clone(),
+                    offset,
+                    data,
+                }))
+                .await?;
+            offset += read;
+        }
+
+        Ok(())
+    }
+
+    /// Set all metadata on temp file and rename it to its final name
+    fn set_metadata_and_rename(
+        &self,
+        temp_rel_path: &str,
+        final_rel_path: &str,
+        metadata: &MyDirEntry,
+    ) -> anyhow::Result<()> {
+        self.fs_tree.chmod(temp_rel_path, metadata.permissions)?;
+        self.fs_tree
+            .chown(temp_rel_path, metadata.uid, metadata.gid)?;
+        self.fs_tree
+            .set_mtime(temp_rel_path, metadata.mtime.as_ref().unwrap())?;
+        self.fs_tree.rename(temp_rel_path, final_rel_path)?;
+        Ok(())
+    }
+
+    /// Finalize regular file creation
+    ///
+    /// Set metadata, then commit file and rename it to its final name
+    fn finalize_regular_file(
+        &self,
+        f: FsFile,
+        final_rel_path: &str,
+        metadata: &MyDirEntry,
+    ) -> anyhow::Result<()> {
+        // set metadata
+        f.chmod(metadata.permissions)?;
+        f.chown(metadata.uid, metadata.gid)?;
+        f.set_mtime(metadata.mtime.as_ref().unwrap())?;
+
+        // create file with temp name
+        let mut temp_file = PathBuf::from(final_rel_path);
+        temp_file.set_file_name(TEMP_FILE);
+        let temp_file = temp_file.checked_as_str()?;
+        self.fs_tree.commit_tmp(temp_file, f)?;
+
+        // rename
+        self.fs_tree.rename(temp_file, final_rel_path)?;
+        Ok(())
     }
 }
 

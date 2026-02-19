@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::path::Path;
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf as _, BufMut as _, BytesMut};
 
 /// Extension of `std::path::Path`
 pub trait PathExt {

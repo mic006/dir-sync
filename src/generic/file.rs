@@ -7,6 +7,7 @@ use std::fs::File;
 use std::os::fd::{FromRawFd as _, IntoRawFd as _, RawFd};
 
 use blake3::Hasher;
+use bytes::BufMut;
 use prost_types::Timestamp;
 
 pub use blake3::Hash as MyHash;
@@ -628,14 +629,16 @@ impl FsFile {
     ///
     /// # Errors
     /// - Returns error if the data cannot be read
-    pub fn read(&self, data: &mut [u8]) -> anyhow::Result<u64> {
+    pub fn read(&self, data: &mut impl BufMut) -> anyhow::Result<u64> {
         unsafe {
-            let res = libc::read(self.fd, data.as_mut_ptr().cast(), data.len());
+            let buf = data.chunk_mut();
+            let res = libc::read(self.fd, buf.as_mut_ptr().cast(), buf.len());
             anyhow::ensure!(
                 res >= 0,
                 "FsFile::read() failed: {}",
                 std::io::Error::last_os_error()
             );
+            data.advance_mut(res.cast_unsigned());
             #[allow(clippy::cast_sign_loss)]
             Ok(res as u64)
         }
@@ -951,8 +954,8 @@ mod tests {
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a file first using create_tmp and commit_tmp
-        let tmp_file = fs_tree.create_tmp(".", 256)?;
         let data = b"Test content for open";
+        let tmp_file = fs_tree.create_tmp(".", data.len() as u64)?;
         tmp_file.write(data)?;
         fs_tree.commit_tmp("test_open.txt", tmp_file)?;
 
@@ -961,9 +964,9 @@ mod tests {
         assert!(f.fd >= 0);
 
         // Read and verify content
-        let mut buffer = [0u8; 256];
+        let mut buffer = Vec::with_capacity(256);
         let bytes_read = f.read(&mut buffer)?;
-        assert_eq!(&buffer[..data.len()], data);
+        assert_eq!(&buffer, data);
         assert!(bytes_read > 0);
 
         f.close()?;
@@ -1084,19 +1087,19 @@ mod tests {
         let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
 
         // Create a file with known content
-        let tmp_file = fs_tree.create_tmp(".", 1024)?;
         let test_data = b"Hello, this is test data for reading!";
+        let tmp_file = fs_tree.create_tmp(".", test_data.len() as u64)?;
         tmp_file.write(test_data)?;
         fs_tree.commit_tmp("read_test.txt", tmp_file)?;
 
         // Open and read the file
         let mut f = fs_tree.open("read_test.txt")?;
-        let mut buffer = [0u8; 256];
+        let mut buffer = Vec::with_capacity(256);
         let bytes_read = f.read(&mut buffer)?;
 
         // Verify the read data
         assert!(bytes_read > 0);
-        assert_eq!(&buffer[..test_data.len()], test_data);
+        assert_eq!(&buffer, test_data);
 
         f.close()?;
         Ok(())
