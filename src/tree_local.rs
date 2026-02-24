@@ -235,7 +235,9 @@ impl ActionCtx {
         let new = req.metadata.as_ref().unwrap();
         let diff = current.map_or(DiffType::all(), |current| diff::diff_entries(&current, new));
 
-        if diff.intersects(DiffType::TYPE | DiffType::CONTENT) {
+        // IMPORTANT: for a regular file, current does not contains file hash
+        // so CONTENT bit shall be ignored for regular files
+        if diff.contains(DiffType::TYPE) || (diff.contains(DiffType::CONTENT) && !new.is_file()) {
             // create entry as tmp file, set metadata and rename it to final name
 
             let mut temp_file = PathBuf::from(&req.rel_path);
@@ -381,11 +383,15 @@ impl ActionCtx {
         final_rel_path: &str,
         metadata: &MyDirEntry,
     ) -> anyhow::Result<()> {
-        self.fs_tree.chmod(temp_rel_path, metadata.permissions)?;
+        if !metadata.is_symlink() {
+            self.fs_tree.chmod(temp_rel_path, metadata.permissions)?;
+        }
         self.fs_tree
             .chown(temp_rel_path, metadata.uid, metadata.gid)?;
-        self.fs_tree
-            .set_mtime(temp_rel_path, metadata.mtime.as_ref().unwrap())?;
+        if !metadata.is_dir() {
+            self.fs_tree
+                .set_mtime(temp_rel_path, metadata.mtime.as_ref().unwrap())?;
+        }
         self.fs_tree.rename(temp_rel_path, final_rel_path)?;
         Ok(())
     }
@@ -749,6 +755,212 @@ mod tests {
 
         task_tracker_main.request_stop();
         task_tracker_main.wait().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn test_action_ctx_operations() -> anyhow::Result<()> {
+        use crate::proto::{DirectoryData, RegularData};
+        use std::os::unix::fs::MetadataExt;
+        crate::generic::test::log_init();
+
+        let temp_dir = tempfile::tempdir()?;
+        let temp_path = temp_dir.path().to_str().unwrap();
+        let fs_tree = Arc::new(FsTree::new(temp_path)?);
+
+        let meta = std::fs::metadata(temp_path)?;
+        let my_uid = meta.uid();
+        let my_gid = meta.gid();
+
+        let (sender_req, receiver_req) = flume::bounded(10);
+        let (sender_rsp, receiver_rsp) = flume::bounded(10);
+
+        let mut action_ctx = ActionCtx {
+            fs_tree: fs_tree.clone(),
+            receiver: receiver_req,
+            sender: sender_rsp,
+            read_buf_size: 1024,
+            ongoing_write_file: None,
+        };
+
+        // Spawn the task
+        tokio::spawn(async move { action_ctx.task().await });
+
+        // 1. Create directory
+        let dir_meta = MyDirEntry {
+            file_name: "subdir".to_string(),
+            specific: Some(Specific::Directory(DirectoryData { content: vec![] })),
+            permissions: 0o755,
+            uid: my_uid,
+            gid: my_gid,
+            mtime: Some(Timestamp {
+                seconds: 1000,
+                nanos: 0,
+            }),
+        };
+        sender_req
+            .send_async(Arc::new(ActionReq::CreateUpdateMetadata(
+                UpdateMetadataReq {
+                    rel_path: "subdir".to_string(),
+                    metadata: Some(dir_meta.clone()),
+                },
+            )))
+            .await?;
+
+        // 2. Create file (write content)
+        let file_content = b"Hello World";
+        let file_hash = blake3::hash(file_content).as_bytes().to_vec();
+        let file_meta = MyDirEntry {
+            file_name: "file.txt".to_string(),
+            specific: Some(Specific::Regular(RegularData {
+                size: file_content.len() as u64,
+                hash: file_hash.clone(),
+            })),
+            permissions: 0o644,
+            uid: my_uid,
+            gid: my_gid,
+            mtime: Some(Timestamp {
+                seconds: 2000,
+                nanos: 0,
+            }),
+        };
+
+        // Send first chunk (creation)
+        sender_req
+            .send_async(Arc::new(ActionReq::CreateUpdateFile(FileWriteReq {
+                rel_path: "subdir/file.txt".to_string(),
+                offset: 0,
+                data: file_content[..5].to_vec(),
+                size: Some(file_content.len() as u64),
+                metadata: None,
+            })))
+            .await?;
+
+        // Send second chunk (append + finalize)
+        sender_req
+            .send_async(Arc::new(ActionReq::CreateUpdateFile(FileWriteReq {
+                rel_path: "subdir/file.txt".to_string(),
+                offset: 5,
+                data: file_content[5..].to_vec(),
+                size: None,
+                metadata: Some(file_meta.clone()),
+            })))
+            .await?;
+
+        // 3. Read file
+        sender_req
+            .send_async(Arc::new(ActionReq::ReadFile(FileReadReq {
+                rel_path: "subdir/file.txt".to_string(),
+            })))
+            .await?;
+
+        // Check read response
+        let rsp = receiver_rsp.recv_async().await?;
+        if let ActionRsp::FileData(read_rsp) = rsp {
+            assert_eq!(read_rsp.rel_path, "subdir/file.txt");
+            assert_eq!(read_rsp.offset, 0);
+            assert_eq!(read_rsp.data, file_content[..]);
+        } else {
+            panic!("Expected FileData response, got {rsp:?}");
+        }
+
+        // 4. Update metadata (chmod)
+        let mut new_file_meta = file_meta.clone();
+        new_file_meta.permissions = 0o600;
+        sender_req
+            .send_async(Arc::new(ActionReq::CreateUpdateMetadata(
+                UpdateMetadataReq {
+                    rel_path: "subdir/file.txt".to_string(),
+                    metadata: Some(new_file_meta),
+                },
+            )))
+            .await?;
+
+        // Sync
+        sender_req
+            .send_async(Arc::new(ActionReq::EndMarker(PROTO_NULL_VALUE)))
+            .await?;
+        let rsp = receiver_rsp.recv_async().await?;
+        println!("{rsp:?}");
+        assert!(matches!(rsp, ActionRsp::EndMarker(_)));
+
+        // Verify permissions
+        let stat = fs_tree.stat("subdir/file.txt")?;
+        assert_eq!(stat.permissions & 0o777, 0o600);
+
+        // 5. Delete file
+        sender_req
+            .send_async(Arc::new(ActionReq::DeleteFile(DeleteEntryReq {
+                rel_path: "subdir/file.txt".to_string(),
+            })))
+            .await?;
+
+        // 6. Delete dir
+        sender_req
+            .send_async(Arc::new(ActionReq::DeleteDir(DeleteEntryReq {
+                rel_path: "subdir".to_string(),
+            })))
+            .await?;
+
+        // Sync again
+        sender_req
+            .send_async(Arc::new(ActionReq::EndMarker(PROTO_NULL_VALUE)))
+            .await?;
+        let rsp = receiver_rsp.recv_async().await?;
+        assert!(matches!(rsp, ActionRsp::EndMarker(_)));
+
+        assert!(!temp_dir.path().join("subdir").exists());
+
+        // 7. Create Symlink
+        let link_meta = MyDirEntry {
+            file_name: "mylink".to_string(),
+            specific: Some(Specific::Symlink("target".to_string())),
+            permissions: 0o777,
+            uid: my_uid,
+            gid: my_gid,
+            mtime: Some(Timestamp {
+                seconds: 3000,
+                nanos: 0,
+            }),
+        };
+        sender_req
+            .send_async(Arc::new(ActionReq::CreateUpdateMetadata(
+                UpdateMetadataReq {
+                    rel_path: "mylink".to_string(),
+                    metadata: Some(link_meta.clone()),
+                },
+            )))
+            .await?;
+
+        // Sync
+        sender_req
+            .send_async(Arc::new(ActionReq::EndMarker(PROTO_NULL_VALUE)))
+            .await?;
+        let rsp = receiver_rsp.recv_async().await?;
+        println!("{rsp:?}");
+        assert!(matches!(rsp, ActionRsp::EndMarker(_)));
+
+        let stat = fs_tree.stat("mylink")?;
+        if let Some(Specific::Symlink(target)) = stat.specific {
+            assert_eq!(target, "target");
+        } else {
+            panic!("Expected symlink");
+        }
+
+        // 8. Error handling
+        sender_req
+            .send_async(Arc::new(ActionReq::ReadFile(FileReadReq {
+                rel_path: "non_existent".to_string(),
+            })))
+            .await?;
+        let rsp = receiver_rsp.recv_async().await?;
+        if let ActionRsp::Error(err) = rsp {
+            assert_eq!(err.rel_path, "non_existent");
+        } else {
+            panic!("Expected Error response");
+        }
+
         Ok(())
     }
 }
