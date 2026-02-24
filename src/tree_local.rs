@@ -428,6 +428,10 @@ pub struct TreeLocal {
     ts: Timestamp,
     /// Root fd
     fs_tree: Arc<FsTree>,
+    /// Action requester
+    sender_act_req: ActionReqSender,
+    /// Action responder
+    receiver_act_rsp: ActionRspReceiver,
     /// Current state
     metadata_state: LocalMetadataState,
     /// Syncs retrieved from the previous metadata snapshot
@@ -486,12 +490,25 @@ impl TreeLocal {
             }
         })?;
 
+        let (sender_act_req, receiver_act_req) = flume::bounded(config.performance.fs_queue_size);
+        let (sender_act_rsp, receiver_act_rsp) = flume::bounded(config.performance.fs_queue_size);
+        let mut action_ctx = ActionCtx {
+            fs_tree: fs_tree.clone(),
+            receiver: receiver_act_req,
+            sender: sender_act_rsp,
+            read_buf_size: config.performance.data_buffer_size.as_nb_bytes(),
+            ongoing_write_file: None,
+        };
+        task_tracker.spawn(async move { action_ctx.task().await })?;
+
         Ok(Self {
             config,
             path: path.into(),
             snap_access,
             ts,
             fs_tree,
+            sender_act_req,
+            receiver_act_rsp,
             metadata_state: LocalMetadataState::Processing(receiver_snap),
             last_syncs,
             sync_paths,
@@ -575,11 +592,11 @@ impl Tree for TreeLocal {
     }
 
     fn get_fs_action_requester(&self) -> ActionReqSender {
-        todo!();
+        self.sender_act_req.clone()
     }
 
     fn get_fs_action_responder(&self) -> ActionRspReceiver {
-        todo!();
+        self.receiver_act_rsp.clone()
     }
 
     fn save_snap(&mut self, sync: bool) {
