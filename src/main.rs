@@ -26,6 +26,9 @@ use crate::tree_local::TreeLocal;
 pub mod config;
 pub mod diff;
 pub mod generic {
+    pub mod config {
+        pub mod field_mem_size;
+    }
     pub mod file;
     pub mod format {
         pub mod hash;

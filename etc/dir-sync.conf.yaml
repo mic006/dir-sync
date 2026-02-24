@@ -3,6 +3,13 @@
 # Sub-folders are NOT created by dir-sync, they shall be created manually
 local_metadata_snap_path: /tmp/autoclean/dir-sync
 
+# Performance settings
+performance:
+  # Size of buffer to read / write file content
+  data_buffer_size: 64k
+  # Size of queue for filesystem operations (number of read / write / delete operations)
+  fs_queue_size: 8
+
 # Profile configuration, allowing user to select one configuration when launching a dir-sync instance
 # dict: <profile_name>: <profile_settings>
 # profile_settings:

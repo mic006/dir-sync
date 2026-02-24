@@ -3,6 +3,13 @@
 # Sub-folders are NOT created by dir-sync, they shall be created manually
 local_metadata_snap_path: /invalid/path
 
+# Performance settings
+performance:
+  # Size of buffer to read / write file content
+  #data_buffer_size: 64k
+  # Size of queue for filesystem operations (number of read / write / delete operations)
+  fs_queue_size: 16
+
 # Profile configuration, allowing user to select one configuration when launching a dir-sync instance
 # dict: <profile_name>: <profile_settings>
 # profile_settings:
@@ -27,6 +34,5 @@ profiles:
       - "folder/foo~/toto.bak"
     ignore_path:
       - "*/bar"
-
 # Name of default profile, when profile is not specified on the command line
 #default_profile:

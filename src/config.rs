@@ -7,6 +7,7 @@ use std::str::FromStr;
 use anyhow::Context as _;
 use serde::Deserialize;
 
+use crate::generic::config::field_mem_size::MemSize;
 use crate::generic::path_regex::{self, PathRegexBuilder};
 
 /// Default configuration path
@@ -25,6 +26,10 @@ pub struct Config {
     /// Path for current user = `local_metadata_snap_path/$USER`
     #[serde(skip)]
     pub local_metadata_snap_path_user: PathBuf,
+
+    /// Performance settings
+    #[serde(default)]
+    pub performance: PerformanceCfg,
 
     /// Profile configuration, allowing user to select one configuration when launching a dir-sync instance
     profiles: BTreeMap<String, Profile>,
@@ -103,6 +108,24 @@ impl FromStr for Config {
         let mut instance = serde_yaml::from_str::<Self>(s)?;
         instance.finalize();
         Ok(instance)
+    }
+}
+
+/// Per profile configuration
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(default)]
+pub struct PerformanceCfg {
+    /// Size of buffer to read / write file content
+    pub data_buffer_size: MemSize,
+    /// Size of queue for filesystem operations (number of read / write / delete operations)
+    pub fs_queue_size: usize,
+}
+impl Default for PerformanceCfg {
+    fn default() -> Self {
+        Self {
+            data_buffer_size: MemSize::new(64 * 1024),
+            fs_queue_size: 8,
+        }
     }
 }
 
@@ -199,6 +222,10 @@ pub mod tests {
             local_metadata_snap_path: PathBuf::from("/invalid/path"),
             local_metadata_snap_path_user: PathBuf::from("/invalid/path")
                 .join(std::env::var("USER").unwrap()),
+            performance: PerformanceCfg {
+                data_buffer_size: MemSize::new(64 * 1024),
+                fs_queue_size: 16,
+            },
             profiles: BTreeMap::from([
                 (
                     String::from("default"),
