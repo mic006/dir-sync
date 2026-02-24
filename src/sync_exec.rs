@@ -359,3 +359,360 @@ impl<'a> SyncExecCtx<'a> {
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generic::task_tracker::TaskTrackerMain;
+    use crate::proto::RegularData;
+    use prost_types::Timestamp;
+
+    struct MockTree {
+        // Channel to receive requests sent by sync_exec (for verification in tests)
+        test_req_rx: flume::Receiver<Arc<ActionReq>>,
+        // Channel to give to sync_exec (via get_fs_action_requester)
+        tree_req_tx: flume::Sender<Arc<ActionReq>>,
+
+        // Channel to send responses to sync_exec (simulating tree response)
+        test_rsp_tx: flume::Sender<crate::proto::ActionRsp>,
+        // Channel to give to sync_exec (via get_fs_action_responder)
+        tree_rsp_rx: flume::Receiver<crate::proto::ActionRsp>,
+    }
+
+    impl MockTree {
+        fn new() -> Self {
+            let (tree_req_tx, test_req_rx) = flume::unbounded();
+            let (test_rsp_tx, tree_rsp_rx) = flume::unbounded();
+            Self {
+                test_req_rx,
+                tree_req_tx,
+                test_rsp_tx,
+                tree_rsp_rx,
+            }
+        }
+    }
+
+    impl crate::tree::TreeMetadata for MockTree {
+        fn get_entry(&self, _rel_path: &str) -> Option<&MyDirEntry> {
+            None
+        }
+
+        fn get_dir_content(&self, _rel_path: &str) -> &[MyDirEntry] {
+            &[]
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Tree for MockTree {
+        async fn wait_for_tree(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn get_fs_action_requester(&self) -> ActionReqSender {
+            self.tree_req_tx.clone()
+        }
+
+        fn get_fs_action_responder(&self) -> ActionRspReceiver {
+            self.tree_rsp_rx.clone()
+        }
+
+        fn save_snap(&mut self, _sync: bool) {}
+
+        fn take_prev_sync_snap(&mut self) -> Option<crate::proto::MetadataSnap> {
+            None
+        }
+    }
+
+    fn create_file_entry(name: &str, size: u64, hash: u8) -> MyDirEntry {
+        MyDirEntry {
+            file_name: name.to_string(),
+            specific: Some(Specific::Regular(RegularData {
+                size,
+                hash: vec![hash],
+            })),
+            permissions: 0o644,
+            uid: 1000,
+            gid: 1000,
+            mtime: Some(Timestamp {
+                seconds: 1000,
+                nanos: 0,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sync_exec_delete() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+        let mut task_tracker_main = TaskTrackerMain::default();
+        let task_tracker = task_tracker_main.tracker();
+
+        let tree1 = MockTree::new();
+        let tree2 = MockTree::new();
+
+        let t1_req_rx = tree1.test_req_rx.clone();
+        let t1_rsp_tx = tree1.test_rsp_tx.clone();
+        let t2_req_rx = tree2.test_req_rx.clone();
+        let t2_rsp_tx = tree2.test_rsp_tx.clone();
+
+        let mut trees: Vec<Box<dyn Tree + Send + Sync>> = vec![Box::new(tree1), Box::new(tree2)];
+
+        // Entry exists in tree2 but not tree1 (source is tree1, so delete in tree2)
+        let diff_entry = DiffEntry {
+            rel_path: "file.txt".to_string(),
+            entries: vec![None, Some(create_file_entry("file.txt", 10, 1))],
+            diff: crate::diff::DiffType::TYPE,
+            sync_source_index: Some(0),
+        };
+
+        let diff_entries = vec![diff_entry];
+
+        // Spawn sync_exec
+        let handle =
+            tokio::spawn(async move { sync_exec(task_tracker, &mut trees, &diff_entries).await });
+
+        // Expect delete on tree2
+        let req = t2_req_rx.recv_async().await?;
+        if let ActionReq::DeleteFile(del_req) = &*req {
+            assert_eq!(del_req.rel_path, "file.txt");
+        } else {
+            panic!("Expected DeleteFile, got {req:?}");
+        }
+
+        // Expect end marker on tree1 (source)
+        let req = t1_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            // Send back end marker response
+            t1_rsp_tx
+                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree1, got {req:?}");
+        }
+
+        // Expect end marker on tree2
+        let req = t2_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            // Send back end marker response
+            t2_rsp_tx
+                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree2, got {req:?}");
+        }
+
+        handle.await??;
+
+        task_tracker_main.request_stop();
+        task_tracker_main.wait().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sync_exec_update_content() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+        let mut task_tracker_main = TaskTrackerMain::default();
+        let task_tracker = task_tracker_main.tracker();
+
+        let tree1 = MockTree::new();
+        let tree2 = MockTree::new();
+
+        let t1_req_rx = tree1.test_req_rx.clone();
+        let t1_rsp_tx = tree1.test_rsp_tx.clone();
+        let t2_req_rx = tree2.test_req_rx.clone();
+        let t2_rsp_tx = tree2.test_rsp_tx.clone();
+
+        let mut trees: Vec<Box<dyn Tree + Send + Sync>> = vec![Box::new(tree1), Box::new(tree2)];
+
+        // Update content from tree1 to tree2
+        let diff_entry = DiffEntry {
+            rel_path: "file.txt".to_string(),
+            entries: vec![
+                Some(create_file_entry("file.txt", 5, 1)),
+                Some(create_file_entry("file.txt", 5, 2)), // same size but content diff (hash)
+            ],
+            diff: crate::diff::DiffType::CONTENT,
+            sync_source_index: Some(0),
+        };
+
+        let diff_entries = vec![diff_entry];
+
+        let handle =
+            tokio::spawn(async move { sync_exec(task_tracker, &mut trees, &diff_entries).await });
+
+        // Expect ReadFile on tree1
+        let req = t1_req_rx.recv_async().await?;
+        if let ActionReq::ReadFile(read_req) = &*req {
+            assert_eq!(read_req.rel_path, "file.txt");
+        } else {
+            panic!("Expected ReadFile on tree1, got {req:?}");
+        }
+
+        // Send FileData back from tree1
+        t1_rsp_tx
+            .send_async(crate::proto::ActionRsp::FileData(
+                crate::proto::action::FileReadRsp {
+                    rel_path: "file.txt".to_string(),
+                    offset: 0,
+                    data: b"hello".to_vec(),
+                },
+            ))
+            .await?;
+
+        // Expect CreateUpdateFile on tree2
+        let req = t2_req_rx.recv_async().await?;
+        if let ActionReq::CreateUpdateFile(write_req) = &*req {
+            assert_eq!(write_req.rel_path, "file.txt");
+            assert_eq!(write_req.offset, 0);
+            assert_eq!(write_req.data, b"hello");
+            assert!(write_req.metadata.is_some()); // Last segment (and only segment)
+        } else {
+            panic!("Expected CreateUpdateFile on tree2, got {req:?}");
+        }
+
+        // Expect EndMarker on tree1
+        let req = t1_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            t1_rsp_tx
+                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree1, got {req:?}");
+        }
+
+        // Expect EndMarker on tree2
+        let req = t2_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            t2_rsp_tx
+                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree2, got {req:?}");
+        }
+
+        handle.await??;
+
+        task_tracker_main.request_stop();
+        task_tracker_main.wait().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sync_exec_update_metadata_dir_symlink() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+        let mut task_tracker_main = TaskTrackerMain::default();
+        let task_tracker = task_tracker_main.tracker();
+
+        let tree1 = MockTree::new();
+        let tree2 = MockTree::new();
+
+        let t1_req_rx = tree1.test_req_rx.clone();
+        let t1_rsp_tx = tree1.test_rsp_tx.clone();
+        let t2_req_rx = tree2.test_req_rx.clone();
+        let t2_rsp_tx = tree2.test_rsp_tx.clone();
+
+        let mut trees: Vec<Box<dyn Tree + Send + Sync>> = vec![Box::new(tree1), Box::new(tree2)];
+
+        // 1. Directory with different permissions
+        let dir_src = MyDirEntry {
+            file_name: "dir".to_string(),
+            specific: Some(Specific::Directory(crate::proto::DirectoryData {
+                content: vec![],
+            })),
+            permissions: 0o755,
+            uid: 1000,
+            gid: 1000,
+            mtime: Some(Timestamp {
+                seconds: 1000,
+                nanos: 0,
+            }),
+        };
+        let dir_dst = MyDirEntry {
+            permissions: 0o700,
+            ..dir_src.clone()
+        };
+        let diff_dir = DiffEntry {
+            rel_path: "dir".to_string(),
+            entries: vec![Some(dir_src.clone()), Some(dir_dst)],
+            diff: crate::diff::DiffType::PERMISSIONS,
+            sync_source_index: Some(0),
+        };
+
+        // 2. Symlink with different target
+        let link_src = MyDirEntry {
+            file_name: "link".to_string(),
+            specific: Some(Specific::Symlink("target1".to_string())),
+            permissions: 0o777,
+            uid: 1000,
+            gid: 1000,
+            mtime: Some(Timestamp {
+                seconds: 1000,
+                nanos: 0,
+            }),
+        };
+        let link_dst = MyDirEntry {
+            specific: Some(Specific::Symlink("target2".to_string())),
+            ..link_src.clone()
+        };
+        let diff_link = DiffEntry {
+            rel_path: "link".to_string(),
+            entries: vec![Some(link_src.clone()), Some(link_dst)],
+            diff: crate::diff::DiffType::CONTENT,
+            sync_source_index: Some(0),
+        };
+
+        let diff_entries = vec![diff_dir, diff_link];
+
+        let handle =
+            tokio::spawn(async move { sync_exec(task_tracker, &mut trees, &diff_entries).await });
+
+        // Expect updates on tree2
+
+        // 1. Update dir
+        let req = t2_req_rx.recv_async().await?;
+        if let ActionReq::CreateUpdateMetadata(req) = &*req {
+            assert_eq!(req.rel_path, "dir");
+            assert_eq!(req.metadata.as_ref().unwrap().permissions, 0o755);
+        } else {
+            panic!("Expected CreateUpdateMetadata for dir, got {req:?}");
+        }
+
+        // 2. Update link
+        let req = t2_req_rx.recv_async().await?;
+        if let ActionReq::CreateUpdateMetadata(req) = &*req {
+            assert_eq!(req.rel_path, "link");
+            if let Some(Specific::Symlink(target)) = &req.metadata.as_ref().unwrap().specific {
+                assert_eq!(target, "target1");
+            } else {
+                panic!("Expected Symlink metadata");
+            }
+        } else {
+            panic!("Expected CreateUpdateMetadata for link, got {req:?}");
+        }
+
+        // Expect EndMarker on tree1
+        let req = t1_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            t1_rsp_tx
+                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree1, got {req:?}");
+        }
+
+        // Expect EndMarker on tree2
+        let req = t2_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            t2_rsp_tx
+                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree2, got {req:?}");
+        }
+
+        handle.await??;
+
+        task_tracker_main.request_stop();
+        task_tracker_main.wait().await?;
+        Ok(())
+    }
+}
