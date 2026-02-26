@@ -306,7 +306,7 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
     } else {
         SyncMode::Standard
     };
-    crate::sync_plan::sync_plan(task_tracker, prev_sync_snaps, sync_mode, &mut diffs)?;
+    crate::sync_plan::sync_plan(task_tracker.clone(), prev_sync_snaps, sync_mode, &mut diffs)?;
 
     if arg.dry_run {
         ctx.save_snaps(false);
@@ -323,7 +323,7 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
             }
         }
     } else {
-        // TODO: perform sync operations
+        sync_exec::sync_exec(task_tracker, &mut ctx.trees, &diffs).await?;
         ctx.save_snaps(true);
     }
 
