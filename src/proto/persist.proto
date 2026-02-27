@@ -13,6 +13,7 @@ message MetadataSnap {
   // canonicalized path
   string path = 2;
   /// last synchronization with given paths (local or remote)
+  /// key is the FQN of the synchronization tree = hostname:path
   map<string, google.protobuf.Timestamp> last_syncs = 3;
   // directory information
   common.MyDirEntry root = 4;

@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use clap::Parser as _;
 use prost_types::Timestamp;
-use regex::Regex;
 
 use crate::config::{Config, ConfigCtx, ConfigRef};
 use crate::diff::DiffMode;
@@ -20,7 +19,7 @@ use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, Track
 use crate::proto::{MetadataSnap, MyDirEntry, TimestampExt as _};
 use crate::snap::list_snaps_stdout;
 use crate::sync_plan::SyncMode;
-use crate::tree::Tree;
+use crate::tree::{Tree, TreePath};
 use crate::tree_local::TreeLocal;
 
 pub mod config;
@@ -370,17 +369,30 @@ impl RunContext {
             ts,
             trees: Vec::with_capacity(arg.dirs.len()),
         };
-        for (index, dir) in arg.dirs.iter().enumerate() {
-            let sync_paths = if sync_mode {
-                arg.dirs
+
+        let tree_paths = arg
+            .dirs
+            .iter()
+            .map(|p| TreePath::new(p))
+            .collect::<Vec<_>>();
+
+        for (index, tp) in tree_paths.iter().enumerate() {
+            let sync_fqns = if sync_mode {
+                tree_paths
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, d)| if i == index { None } else { Some(d.clone()) })
+                    .filter_map(|(i, tp)| {
+                        if i == index {
+                            None
+                        } else {
+                            Some(tp.fqn.clone())
+                        }
+                    })
                     .collect()
             } else {
                 vec![]
             };
-            instance.spawn_tree(task_tracker, dir, sync_paths)?;
+            instance.spawn_tree(task_tracker, tp, sync_fqns)?;
         }
         Ok(instance)
     }
@@ -388,25 +400,23 @@ impl RunContext {
     fn spawn_tree(
         &mut self,
         task_tracker: &TaskTracker,
-        dir: &str,
-        sync_paths: Vec<String>,
+        tp: &TreePath,
+        sync_fqns: Vec<String>,
     ) -> anyhow::Result<()> {
-        use std::sync::LazyLock;
-        static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+):(.+)$").unwrap());
-        if let Some(_captures) = RE.captures(dir) {
-            // remote tree
-            todo!();
-        } else {
+        if tp.hostname.is_empty() {
             // local tree
-            let dir = canonicalize(dir)?;
+            let dir = canonicalize(&tp.path)?;
             let tree = Box::new(TreeLocal::spawn(
                 self.config.clone(),
                 task_tracker,
                 &dir,
                 self.ts,
-                sync_paths,
+                sync_fqns,
             )?);
             self.trees.push(tree);
+        } else {
+            // remote tree
+            todo!();
         }
         Ok(())
     }

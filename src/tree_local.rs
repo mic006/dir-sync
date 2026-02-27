@@ -443,7 +443,7 @@ pub struct TreeLocal {
     /// Syncs retrieved from the previous metadata snapshot
     last_syncs: BTreeMap<String, Timestamp>,
     /// Other paths to perform synchronization with
-    sync_paths: Arc<Vec<String>>,
+    sync_fqns: Arc<Vec<String>>,
 }
 
 impl TreeLocal {
@@ -454,9 +454,9 @@ impl TreeLocal {
     pub fn spawn(
         config: ConfigRef,
         task_tracker: &TaskTracker,
-        path: &str,              // path to walk
-        ts: Timestamp,           // reference timestamp
-        sync_paths: Vec<String>, // other paths to perform synchronization with
+        path: &str,             // path to walk
+        ts: Timestamp,          // reference timestamp
+        sync_fqns: Vec<String>, // other paths to perform synchronization with
     ) -> anyhow::Result<Self> {
         let fs_tree = Arc::new(FsTree::new(path)?);
 
@@ -475,21 +475,21 @@ impl TreeLocal {
         // expecting a single result
         let (sender_snap, receiver_snap) = flume::bounded(1);
 
-        let sync_paths = Arc::new(sync_paths);
+        let sync_fqns = Arc::new(sync_fqns);
 
         task_tracker.spawn_blocking({
             let config = config.clone();
             let task_tracker = task_tracker.clone();
             let fs_tree = fs_tree.clone();
             let snap_access = snap_access.clone();
-            let sync_paths = sync_paths.clone();
+            let sync_fqns = sync_fqns.clone();
             move || {
                 Self::walk_task(
                     config,
                     task_tracker,
                     fs_tree,
                     prev_snap,
-                    sync_paths,
+                    sync_fqns,
                     snap_access,
                     sender_snap,
                 )
@@ -517,7 +517,7 @@ impl TreeLocal {
             receiver_act_rsp,
             metadata_state: LocalMetadataState::Processing(receiver_snap),
             last_syncs,
-            sync_paths,
+            sync_fqns,
         })
     }
 
@@ -527,7 +527,7 @@ impl TreeLocal {
         task_tracker: TaskTracker,
         fs_tree: Arc<FsTree>,
         prev_snap: Option<MyDirEntry>,
-        sync_paths: Arc<Vec<String>>, // other paths to perform synchronization with
+        sync_fqns: Arc<Vec<String>>, // other paths to perform synchronization with
         snap_access: SnapAccess,
         sender_snap: Sender<Box<WalkOutput>>,
     ) -> anyhow::Result<TaskExit> {
@@ -545,9 +545,9 @@ impl TreeLocal {
 
         log::info!("tree[{fs_tree}]: walk completed");
 
-        let prev_sync_snap = (!sync_paths.is_empty())
+        let prev_sync_snap = (!sync_fqns.is_empty())
             .then(|| {
-                let prev_sync_snap = snap_access.load_common_sync_snap(&sync_paths);
+                let prev_sync_snap = snap_access.load_common_sync_snap(&sync_fqns);
                 log::info!(
                     "tree[{fs_tree}]: previous sync snapshot {}",
                     if prev_sync_snap.is_some() {
@@ -614,8 +614,8 @@ impl Tree for TreeLocal {
             let mut last_syncs = std::mem::take(&mut self.last_syncs);
             if sync {
                 // and update with synced remotes
-                for sync_path in self.sync_paths.iter() {
-                    last_syncs.insert(sync_path.clone(), self.ts);
+                for sync_fqn in self.sync_fqns.iter() {
+                    last_syncs.insert(sync_fqn.clone(), self.ts);
                 }
             }
             // save metadata
@@ -626,7 +626,7 @@ impl Tree for TreeLocal {
                 root: Some(output.snap),
             };
             let synced_remotes = if sync {
-                self.sync_paths
+                self.sync_fqns
                     .iter()
                     .map(String::as_str)
                     .collect::<Vec<_>>()

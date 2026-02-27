@@ -1,8 +1,9 @@
 //! Generic interface for one input of `dir-sync`
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use flume::{Receiver, Sender};
+use regex::Regex;
 
 use crate::proto::{ActionReq, ActionRsp, MetadataSnap, MyDirEntry};
 
@@ -46,5 +47,40 @@ pub trait Tree: TreeMetadata {
 impl AsRef<dyn TreeMetadata> for Box<dyn Tree + Send + Sync> {
     fn as_ref(&self) -> &(dyn TreeMetadata + 'static) {
         &**self
+    }
+}
+
+pub struct TreePath {
+    /// Local path to the tree
+    pub path: String,
+    /// Hostname of machine, empty if local
+    pub hostname: String,
+    /// Fully qualified name = "hostname:path"
+    /// This is the name used to identify synchronization trees
+    pub fqn: String,
+}
+
+impl TreePath {
+    pub fn new(arg_path: &str) -> Self {
+        static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+):(.+)$").unwrap());
+
+        if let Some(captures) = RE.captures(arg_path) {
+            let hostname = &captures[0];
+            let path = &captures[1];
+            let fqn = format!("{hostname}:{path}");
+            Self {
+                path: path.to_string(),
+                hostname: hostname.to_string(),
+                fqn,
+            }
+        } else {
+            let hostname = std::env::var("HOSTNAME").unwrap_or("localhost".to_owned());
+            let fqn = format!("{hostname}:{arg_path}");
+            Self {
+                path: arg_path.to_string(),
+                hostname: String::new(),
+                fqn,
+            }
+        }
     }
 }
