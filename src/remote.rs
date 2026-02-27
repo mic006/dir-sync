@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::config::{Config, ConfigCtx};
 use crate::generic::prost_stream::{ProstRead, ProstWrite};
 use crate::generic::task_tracker::{TaskExit, TaskTracker, TrackedTaskResult};
+use crate::proto::action::ActionRsp;
 use crate::proto::remote::{Request, Response, WalkOutput};
 use crate::proto::{REMOTE_PROTOCOL_VERSION, RemoteReq, RemoteRsp};
 use crate::tree::{Tree as _, TreeMetadata as _};
@@ -63,7 +64,43 @@ pub async fn remote_main(task_tracker: TaskTracker) -> TrackedTaskResult {
         })
         .await?;
 
-    // 6. dispatch actions
+    // 6. manage tree responses, forward to stdout
+    task_tracker.spawn({
+        let tree_action_response = tree.get_fs_action_responder();
+        async move {
+            while let Ok(rsp) = tree_action_response.recv_async().await {
+                remote_out
+                    .send(&Response {
+                        rsp: Some(RemoteRsp::ActionRsp(ActionRsp { rsp: Some(rsp) })),
+                    })
+                    .await?;
+            }
+            Ok(TaskExit::SecondaryTaskKeepRunning)
+        }
+    })?;
+
+    // 7. dispatch actions
+    let tree_action_sender = tree.get_fs_action_requester();
+    loop {
+        let req = remote_in.recv::<Request>().await?;
+        match req.req {
+            Some(RemoteReq::Config(_)) => {
+                anyhow::bail!("internal error: unexpected RemoteReq Config after initialization");
+            }
+            Some(RemoteReq::ActionReq(req)) => {
+                if let Some(req) = req.req {
+                    tree_action_sender.send_async(Arc::new(req)).await?;
+                } else {
+                    anyhow::bail!("internal error: missing ActionReq");
+                }
+            }
+            Some(RemoteReq::Terminate(_)) => break,
+            None => anyhow::bail!("internal error: missing RemoteReq"),
+        }
+    }
+
+    // 8. clean exit
+    tree.save_snap(true);
 
     Ok(TaskExit::MainTaskStopAppSuccess)
 }
