@@ -48,6 +48,7 @@ pub mod generic {
 }
 pub mod output;
 pub mod proto;
+pub mod remote;
 pub mod snap;
 pub mod sync_exec;
 pub mod sync_plan;
@@ -216,6 +217,7 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
     }
 
     match run_mode {
+        RunMode::TerminalUI => todo!(),
         RunMode::Status => {
             let task_tracker = task_tracker_main.tracker();
             task_tracker_main
@@ -235,8 +237,11 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
             task_tracker_main
                 .spawn(async move { refresh_metadata_snap(task_tracker, arg).await })?;
         }
+        RunMode::Remote => {
+            let task_tracker = task_tracker_main.tracker();
+            task_tracker_main.spawn(async move { remote::remote_main(task_tracker).await })?;
+        }
         RunMode::ListMetadataSnap | RunMode::DumpMetadataSnap => unreachable!("handled in main()"),
-        _ => todo!(),
     }
 
     // run until completion or error

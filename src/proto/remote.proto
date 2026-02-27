@@ -3,26 +3,59 @@ syntax = "proto3";
 package remote;
 
 import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
 
 import "action.proto";
 import "common.proto";
+import "persist.proto";
+
+// Config for remote tree
+message Config {
+  // path of tree to diff / sync
+  string path = 1;
+  // reference timestamp for this run
+  google.protobuf.Timestamp ts = 2;
+  // other paths to perform synchronization with
+  repeated string sync_path = 3;
+  // size of buffer to read / write file content
+  uint64 perf_data_buffer_size = 4;
+  // size of queue for filesystem operations (number of read / write / delete operations)
+  uint32 perf_fs_queue_size = 5;
+  // file/directory names to be ignored, at any level
+  repeated string filter_ignore_name = 6;
+  // relative paths to be ignored
+  repeated string filter_ignore_path = 7;
+  // relative paths to be considered, even if a parent folder is ignored
+  repeated string filter_white_list = 8;
+}
 
 // Request to remote
 message Request {
   oneof req {
     // configuration + path for tree analysis
-    google.protobuf.NullValue config = 1;
+    Config config = 1;
     // filesystem action request
     action.ActionReq action_req = 2;
+    // clean termination request
+    google.protobuf.NullValue terminate = 3;
   }
+}
+
+message WalkOutput {
+  // metadata snapshot of the tree
+  common.MyDirEntry snap = 1;
+  // previous sync snapshot for the tree, if any
+  persist.MetadataSnap prev_sync_snap = 2;
 }
 
 // Response from remote
 message Response {
   oneof rsp {
-    // metadata of the whole tree
-    common.MyDirEntry tree_metadata = 1;
+    // major protocol version to ensure compatibility
+    uint32 version = 1;
+    // output of the initial walk action
+    WalkOutput walk_output = 2;
     // filesystem action response
-    action.ActionRsp action_rsp = 2;
+    action.ActionRsp action_rsp = 3;
   }
 }

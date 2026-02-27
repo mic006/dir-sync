@@ -16,10 +16,16 @@ include!(concat!(env!("OUT_DIR"), "/mod.rs"));
 pub use action::{action_req::Req as ActionReq, action_rsp::Rsp as ActionRsp};
 pub use common::{DeviceData, DirectoryData, MyDirEntry, RegularData, my_dir_entry::Specific};
 pub use persist::MetadataSnap;
+pub use remote::{request::Req as RemoteReq, response::Rsp as RemoteRsp};
+
 pub use prost_types::Timestamp;
 
 /// Null value for google.protobuf.NullValue fields
 pub const PROTO_NULL_VALUE: i32 = 0;
+
+/// Version of the protocol (remote.proto) currently implemented
+/// Value shall be incremented on incompatible protocol change
+pub const REMOTE_PROTOCOL_VERSION: u32 = 1;
 
 /// Extension to `MyDirEntry`
 pub trait MyDirEntryExt
