@@ -32,6 +32,8 @@ profiles:
     include: default
     white_list:
       - "folder/foo~/toto.bak"
+    ignore_name:
+      - "cache"
     ignore_path:
       - "*/bar"
 # Name of default profile, when profile is not specified on the command line

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use prost_types::Timestamp;
 
-use crate::config::ConfigRef;
+use crate::config::ConfigCtx;
 use crate::generic::format::timestamp::format_ts;
 use crate::generic::fs::MessageExt as _;
 use crate::proto::MetadataSnap;
@@ -32,7 +32,7 @@ pub struct SnapAccess {
 impl SnapAccess {
     /// Create new instance
     #[must_use]
-    pub fn new(cfg: &ConfigRef, canon_input_path: &str) -> Self {
+    pub fn new(cfg: &ConfigCtx, canon_input_path: &str) -> Self {
         let folder_path = cfg
             .local_metadata_snap_path_user
             .join(Self::path_to_unique_id(canon_input_path));
@@ -137,7 +137,7 @@ impl SnapAccess {
 }
 
 /// List user's metadata snapshots to stdout
-pub fn list_snaps_stdout(cfg: &ConfigRef) {
+pub fn list_snaps_stdout(cfg: &ConfigCtx) {
     let _ignored = list_snaps_stdout_exit_on_error(cfg);
 }
 
@@ -162,7 +162,7 @@ impl From<MetadataSnap> for SnapExtract {
 }
 
 /// List user's metadata snapshots to stdout, with easy exit on error (stdout closed)
-fn list_snaps_stdout_exit_on_error(cfg: &ConfigRef) -> anyhow::Result<()> {
+fn list_snaps_stdout_exit_on_error(cfg: &ConfigCtx) -> anyhow::Result<()> {
     // go through snaps directories
     let dirs = cfg
         .local_metadata_snap_path_user
@@ -220,9 +220,9 @@ fn list_snaps_stdout_exit_on_error(cfg: &ConfigRef) -> anyhow::Result<()> {
 mod tests {
 
     use super::*;
+    use crate::config::ConfigCtx;
     use crate::config::tests::load_ut_cfg;
     use crate::proto::MetadataSnap;
-    use std::sync::Arc;
 
     #[test]
     fn test_path_to_unique_id() {
@@ -239,9 +239,9 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
 
         // load config, patched to point to temp dir
-        let mut cfg = load_ut_cfg().unwrap();
+        let config = load_ut_cfg().unwrap();
+        let mut cfg = ConfigCtx::from_config_file(config, Some("data"))?;
         cfg.local_metadata_snap_path_user = temp_dir.path().to_path_buf();
-        let cfg = Arc::new(cfg);
 
         let source_path = "/my/source/path";
         let snap_access = SnapAccess::new(&cfg, source_path);

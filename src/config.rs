@@ -14,22 +14,19 @@ use crate::generic::path_regex::{self, PathRegexBuilder};
 pub const DEFAULT_CFG_PATH: &str = "/etc/dir-sync.conf.yaml";
 
 /// Configuration reference, shared between all objects (read-only access)
-pub type ConfigRef = std::sync::Arc<Config>;
+pub type ConfigRef = std::sync::Arc<ConfigCtx>;
 
-/// Dir-sync configuration
+/// Dir-sync configuration, deserialization of YAML config file
 #[derive(Deserialize, Debug, PartialEq)]
 pub struct Config {
     /// Path to store metadata snapshot of local paths, to speed-up further analysis
     /// Data will be stored in a sub-folder named with the dir-sync UID
     /// Sub-folders are NOT created by dir-sync, they shall be created manually
     local_metadata_snap_path: PathBuf,
-    /// Path for current user = `local_metadata_snap_path/$USER`
-    #[serde(skip)]
-    pub local_metadata_snap_path_user: PathBuf,
 
     /// Performance settings
     #[serde(default)]
-    pub performance: PerformanceCfg,
+    performance: PerformanceCfg,
 
     /// Profile configuration, allowing user to select one configuration when launching a dir-sync instance
     profiles: BTreeMap<String, Profile>,
@@ -50,64 +47,12 @@ impl Config {
             .with_context(|| format!("failed to read config file at '{}'", path.display()))?;
         Self::from_str(&config_str)
     }
-
-    /// Finalize configuration
-    fn finalize(&mut self) {
-        self.local_metadata_snap_path_user = self
-            .local_metadata_snap_path
-            .join(std::env::var("USER").unwrap_or_else(|_| String::from("nobody")));
-    }
-
-    /// Get file matcher for the wanted profile
-    ///
-    /// # Errors
-    /// * invalid profile (profile not found, or include profile not found)
-    pub fn get_file_matcher(&self, profile: Option<&str>) -> anyhow::Result<Option<FileMatcher>> {
-        let Some(profile) = profile.or(self.default_profile.as_deref()) else {
-            return Ok(None);
-        };
-
-        let mut ignore_name_regex_builder = PathRegexBuilder::new_name();
-        let mut ignore_path_regex_builder = PathRegexBuilder::new_path();
-        let mut white_list = vec![];
-
-        let mut profiles = vec![profile];
-
-        while let Some(prof_name) = profiles.pop() {
-            let Some(prof_data) = self.profiles.get(prof_name) else {
-                anyhow::bail!("config error: invalid reference to profile '{prof_name}'");
-            };
-            for p in &*prof_data.include {
-                profiles.push(p);
-            }
-            for p in &prof_data.ignore_name {
-                ignore_name_regex_builder.add_pattern(p);
-            }
-            for p in &prof_data.ignore_path {
-                ignore_path_regex_builder.add_pattern(p);
-            }
-            white_list.extend(
-                prof_data
-                    .white_list
-                    .iter()
-                    .map(|pattern| path_regex::add_rel_path_prefix(pattern)),
-            );
-        }
-
-        Ok(Some(FileMatcher {
-            ignore_name_regex: ignore_name_regex_builder.finalize()?,
-            ignore_path_regex: ignore_path_regex_builder.finalize()?,
-            white_list,
-        }))
-    }
 }
 impl FromStr for Config {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut instance = serde_yaml::from_str::<Self>(s)?;
-        instance.finalize();
-        Ok(instance)
+        Ok(serde_yaml::from_str::<Self>(s)?)
     }
 }
 
@@ -173,6 +118,91 @@ struct Profile {
     white_list: Vec<String>,
 }
 
+pub struct ConfigCtx {
+    /// Path for current user = `local_metadata_snap_path/$USER`
+    pub local_metadata_snap_path_user: PathBuf,
+
+    /// Performance settings
+    pub performance: PerformanceCfg,
+
+    /// File/directory names to be ignored, at any level
+    /// "*" represents any number of characters, including leading "."
+    filter_ignore_name: Vec<String>,
+    /// Relative paths to be ignored
+    /// "*" represents any number of characters excluding "/"
+    filter_ignore_path: Vec<String>,
+    /// Relative paths to be considered, even if a parent folder is ignored
+    filter_white_list: Vec<String>,
+
+    /// Determine name/paths to be ignored
+    pub file_matcher: Option<FileMatcher>,
+}
+
+impl ConfigCtx {
+    /// Get configuration context from configuration file
+    ///
+    /// # Errors
+    /// * invalid profile (profile not found, or include profile not found)
+    pub fn from_config_file(mut config: Config, profile: Option<&str>) -> anyhow::Result<Self> {
+        let local_metadata_snap_path_user = config
+            .local_metadata_snap_path
+            .join(std::env::var("USER").unwrap_or_else(|_| String::from("nobody")));
+
+        let mut filter_ignore_name = vec![];
+        let mut filter_ignore_path = vec![];
+        let mut filter_white_list = vec![];
+
+        if let Some(profile) = profile {
+            let mut profiles = vec![profile.to_string()];
+
+            while let Some(prof_name) = profiles.pop() {
+                let Some(mut prof_data) = config.profiles.remove(&prof_name) else {
+                    anyhow::bail!("config error: invalid reference to profile '{prof_name}'");
+                };
+                profiles.extend(prof_data.include.iter().map(ToOwned::to_owned));
+                filter_ignore_name.append(&mut prof_data.ignore_name);
+                filter_ignore_path.append(&mut prof_data.ignore_path);
+                filter_white_list.extend(
+                    prof_data
+                        .white_list
+                        .iter()
+                        .map(|pattern| path_regex::add_rel_path_prefix(pattern)),
+                );
+            }
+        }
+
+        let mut instance = Self {
+            local_metadata_snap_path_user,
+            performance: config.performance,
+            filter_ignore_name,
+            filter_ignore_path,
+            filter_white_list,
+            file_matcher: None,
+        };
+        instance.add_file_matcher()?;
+        Ok(instance)
+    }
+
+    fn add_file_matcher(&mut self) -> anyhow::Result<()> {
+        if !(self.filter_ignore_name.is_empty() && self.filter_ignore_path.is_empty()) {
+            let mut ignore_name_regex_builder = PathRegexBuilder::new_name();
+            for p in &self.filter_ignore_name {
+                ignore_name_regex_builder.add_pattern(p);
+            }
+            let mut ignore_path_regex_builder = PathRegexBuilder::new_path();
+            for p in &self.filter_ignore_path {
+                ignore_path_regex_builder.add_pattern(p);
+            }
+            self.file_matcher = Some(FileMatcher {
+                ignore_name_regex: ignore_name_regex_builder.finalize()?,
+                ignore_path_regex: ignore_path_regex_builder.finalize()?,
+                white_list: self.filter_white_list.clone(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Determine name/paths to be ignored
 #[derive(Clone)]
 pub struct FileMatcher {
@@ -208,20 +238,25 @@ impl FileMatcher {
 
 #[cfg(test)]
 pub mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[allow(clippy::missing_errors_doc)]
     pub fn load_ut_cfg() -> anyhow::Result<Config> {
         Config::from_file(Some(Path::new("src/test/ut_config.yaml")))
     }
+    #[allow(clippy::missing_errors_doc)]
+    pub fn load_ut_cfg_ctx() -> anyhow::Result<Arc<ConfigCtx>> {
+        let config = Config::from_file(Some(Path::new("src/test/ut_config.yaml")))?;
+        Ok(Arc::new(ConfigCtx::from_config_file(config, Some("data"))?))
+    }
 
     #[test]
-    fn load_cfg() {
+    fn test_load_cfg() {
         let cfg = load_ut_cfg().unwrap();
         let expected_cfg = Config {
             local_metadata_snap_path: PathBuf::from("/invalid/path"),
-            local_metadata_snap_path_user: PathBuf::from("/invalid/path")
-                .join(std::env::var("USER").unwrap()),
             performance: PerformanceCfg {
                 data_buffer_size: MemSize::new(64 * 1024),
                 fs_queue_size: 16,
@@ -246,7 +281,7 @@ pub mod tests {
                     String::from("data"),
                     Profile {
                         include: ZeroOrOneOrList::One(String::from("default")),
-                        ignore_name: vec![],
+                        ignore_name: vec![String::from("cache")],
                         ignore_path: vec![String::from("*/bar")],
                         white_list: vec![String::from("folder/foo~/toto.bak")],
                     },
@@ -258,13 +293,53 @@ pub mod tests {
     }
 
     #[test]
-    fn test_cfg_get_file_matcher() {
+    fn test_config_ctx_from_cfg_file() {
+        let config = Config::from_file(Some(Path::new("src/test/ut_config.yaml"))).unwrap();
+        let config = ConfigCtx::from_config_file(config, Some("data")).unwrap();
+        assert_eq!(
+            config.local_metadata_snap_path_user,
+            PathBuf::from("/invalid/path").join(std::env::var("USER").unwrap())
+        );
+        assert_eq!(config.performance.data_buffer_size, MemSize::new(64 * 1024));
+        assert_eq!(config.performance.fs_queue_size, 16);
+        assert_eq!(
+            config.filter_ignore_name,
+            vec![
+                String::from("cache"),
+                String::from("*.bak"),
+                String::from("*.o"),
+                String::from("*.old"),
+                String::from("*~"),
+                String::from(".git"),
+            ]
+        );
+        assert_eq!(config.filter_ignore_path, vec![String::from("*/bar")]);
+        assert_eq!(
+            config.filter_white_list,
+            vec![String::from("./folder/foo~/toto.bak")]
+        );
+        assert!(config.file_matcher.is_some());
+    }
+
+    #[test]
+    fn test_config_ctx_from_cfg_file_profile_none() {
         let cfg = load_ut_cfg().unwrap();
-        assert!(cfg.get_file_matcher(Some("unknown")).is_err());
-        assert!(cfg.get_file_matcher(None).unwrap().is_none());
+        let cfg = ConfigCtx::from_config_file(cfg, None).unwrap();
+        assert!(cfg.file_matcher.is_none());
+    }
 
-        let file_matcher = cfg.get_file_matcher(Some("data")).unwrap().unwrap();
+    #[test]
+    fn test_config_ctx_from_cfg_file_profile_invalid() {
+        let cfg = load_ut_cfg().unwrap();
+        let cfg = ConfigCtx::from_config_file(cfg, Some("unknown"));
+        assert!(cfg.is_err());
+    }
 
+    #[test]
+    fn test_cfg_file_matcher() {
+        let cfg = load_ut_cfg_ctx().unwrap();
+        assert!(cfg.file_matcher.is_some());
+        let file_matcher = cfg.file_matcher.as_ref().unwrap();
         assert!(file_matcher.is_ignored("./toto.bak"));
         assert!(!file_matcher.is_ignored("./bar"));
         assert!(file_matcher.is_ignored("./foo/bar"));

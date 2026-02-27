@@ -9,7 +9,7 @@ use std::sync::Arc;
 use flume::{Receiver, Sender};
 use prost_types::Timestamp;
 
-use crate::config::{ConfigRef, FileMatcher};
+use crate::config::ConfigRef;
 use crate::diff::{self, DiffType};
 use crate::generic::file::{FsFile, FsTree};
 use crate::generic::fs::PathExt as _;
@@ -49,8 +49,8 @@ struct WalkOutput {
 
 /// Context for walking the tree
 struct WalkCtx {
+    config: ConfigRef,
     fs_tree: Arc<FsTree>,
-    file_matcher: Option<FileMatcher>,
     task_tracker: TaskTracker,
 }
 
@@ -152,7 +152,7 @@ impl WalkCtx {
 
     /// Indicate if relative path shall be ignored during walking
     fn ignore(&self, rel_path: &str) -> bool {
-        if let Some(fm) = &self.file_matcher {
+        if let Some(fm) = &self.config.file_matcher {
             fm.is_ignored(rel_path)
         } else {
             false
@@ -454,10 +454,9 @@ impl TreeLocal {
     pub fn spawn(
         config: ConfigRef,
         task_tracker: &TaskTracker,
-        path: &str,                        // path to walk
-        ts: Timestamp,                     // reference timestamp
-        file_matcher: Option<FileMatcher>, // filter for files to walk
-        sync_paths: Vec<String>,           // other paths to perform synchronization with
+        path: &str,              // path to walk
+        ts: Timestamp,           // reference timestamp
+        sync_paths: Vec<String>, // other paths to perform synchronization with
     ) -> anyhow::Result<Self> {
         let fs_tree = Arc::new(FsTree::new(path)?);
 
@@ -479,15 +478,16 @@ impl TreeLocal {
         let sync_paths = Arc::new(sync_paths);
 
         task_tracker.spawn_blocking({
+            let config = config.clone();
             let task_tracker = task_tracker.clone();
             let fs_tree = fs_tree.clone();
             let snap_access = snap_access.clone();
             let sync_paths = sync_paths.clone();
             move || {
                 Self::walk_task(
+                    config,
                     task_tracker,
                     fs_tree,
-                    file_matcher,
                     prev_snap,
                     sync_paths,
                     snap_access,
@@ -523,9 +523,9 @@ impl TreeLocal {
 
     /// Task to walk the tree
     fn walk_task(
+        config: ConfigRef,
         task_tracker: TaskTracker,
         fs_tree: Arc<FsTree>,
-        file_matcher: Option<FileMatcher>,
         prev_snap: Option<MyDirEntry>,
         sync_paths: Arc<Vec<String>>, // other paths to perform synchronization with
         snap_access: SnapAccess,
@@ -536,8 +536,8 @@ impl TreeLocal {
         let mut snap = fs_tree.stat(".")?;
 
         let ctx = WalkCtx {
+            config,
             fs_tree: fs_tree.clone(),
-            file_matcher,
             task_tracker,
         };
 
@@ -658,7 +658,7 @@ impl Drop for TreeLocal {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::tests::load_ut_cfg;
+    use crate::config::tests::load_ut_cfg_ctx;
     use crate::generic::file::MyHash;
     use crate::generic::fs::PathExt as _;
     use crate::generic::task_tracker::TaskTrackerMain;
@@ -689,9 +689,8 @@ mod tests {
         std::fs::write(test_dir_path.join("sub_folder1/ignored~"), "ignored")?;
         std::os::unix::fs::symlink("target", test_dir_path.join("some_link"))?;
 
-        let config = Arc::new(load_ut_cfg().unwrap());
+        let config = load_ut_cfg_ctx().unwrap();
         let ts = Timestamp::now();
-        let file_matcher = config.get_file_matcher(Some("data")).unwrap();
 
         // walk the directory
         let mut task_tracker_main = TaskTrackerMain::default();
@@ -701,7 +700,6 @@ mod tests {
             &task_tracker,
             test_dir_path.checked_as_str()?,
             ts,
-            file_matcher,
             vec![],
         )?;
         drop(task_tracker);

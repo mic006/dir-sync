@@ -12,7 +12,7 @@ use clap::Parser as _;
 use prost_types::Timestamp;
 use regex::Regex;
 
-use crate::config::{Config, FileMatcher};
+use crate::config::{Config, ConfigCtx, ConfigRef};
 use crate::diff::DiffMode;
 use crate::generic::fs::{MessageExt as _, PathExt as _};
 use crate::generic::libc::reset_sigpipe;
@@ -174,7 +174,8 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
                 arg.dirs.is_empty(),
                 "ListMetadataSnap mode: expects no extra argument"
             );
-            let config = Arc::new(Config::from_file(None)?);
+            let config = Config::from_file(None)?;
+            let config = Arc::new(ConfigCtx::from_config_file(config, None)?);
             list_snaps_stdout(&config);
             Ok(std::process::ExitCode::SUCCESS)
         }
@@ -351,9 +352,7 @@ async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTa
 /// Runtime context
 struct RunContext {
     /// Configuration
-    config: Arc<Config>,
-    /// File Matcher for selected profile
-    file_matcher: Option<FileMatcher>,
+    config: ConfigRef,
     /// Timestamp of the snapshot
     ts: Timestamp,
     /// Trees to compare
@@ -362,13 +361,12 @@ struct RunContext {
 
 impl RunContext {
     fn new(task_tracker: &TaskTracker, arg: &Arg, sync_mode: bool) -> anyhow::Result<Self> {
-        let config = Arc::new(Config::from_file(None)?);
-        let file_matcher = config.get_file_matcher(arg.profile.as_deref())?;
+        let config = Config::from_file(None)?;
+        let config = Arc::new(ConfigCtx::from_config_file(config, arg.profile.as_deref())?);
         let ts = Timestamp::now();
 
         let mut instance = Self {
             config,
-            file_matcher,
             ts,
             trees: Vec::with_capacity(arg.dirs.len()),
         };
@@ -406,7 +404,6 @@ impl RunContext {
                 task_tracker,
                 &dir,
                 self.ts,
-                self.file_matcher.clone(),
                 sync_paths,
             )?);
             self.trees.push(tree);
