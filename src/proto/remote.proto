@@ -16,7 +16,7 @@ message Config {
   // reference timestamp for this run
   google.protobuf.Timestamp ts = 2;
   // other paths to perform synchronization with
-  repeated string sync_path = 3;
+  repeated string sync_paths = 3;
   // size of buffer to read / write file content
   uint64 perf_data_buffer_size = 4;
   // size of queue for filesystem operations (number of read / write / delete operations)

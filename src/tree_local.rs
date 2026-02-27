@@ -496,13 +496,13 @@ impl TreeLocal {
             }
         })?;
 
-        let (sender_act_req, receiver_act_req) = flume::bounded(config.performance.fs_queue_size);
-        let (sender_act_rsp, receiver_act_rsp) = flume::bounded(config.performance.fs_queue_size);
+        let (sender_act_req, receiver_act_req) = flume::bounded(config.perf_fs_queue_size);
+        let (sender_act_rsp, receiver_act_rsp) = flume::bounded(config.perf_fs_queue_size);
         let mut action_ctx = ActionCtx {
             fs_tree: fs_tree.clone(),
             receiver: receiver_act_req,
             sender: sender_act_rsp,
-            read_buf_size: config.performance.data_buffer_size.as_nb_bytes(),
+            read_buf_size: config.perf_data_buffer_size,
             ongoing_write_file: None,
         };
         task_tracker.spawn(async move { action_ctx.task().await })?;

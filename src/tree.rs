@@ -22,6 +22,7 @@ pub trait TreeMetadata {
 #[async_trait::async_trait]
 pub trait Tree: TreeMetadata {
     /// Wait for tree to be available
+    /// Shall be cancellable safe
     async fn wait_for_tree(&mut self) -> anyhow::Result<()>;
 
     /// Get sender to send FS action requests

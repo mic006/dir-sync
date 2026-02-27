@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use crate::generic::config::field_mem_size::MemSize;
 use crate::generic::path_regex::{self, PathRegexBuilder};
+use crate::proto;
 
 /// Default configuration path
 pub const DEFAULT_CFG_PATH: &str = "/etc/dir-sync.conf.yaml";
@@ -122,8 +123,9 @@ pub struct ConfigCtx {
     /// Path for current user = `local_metadata_snap_path/$USER`
     pub local_metadata_snap_path_user: PathBuf,
 
-    /// Performance settings
-    pub performance: PerformanceCfg,
+    // Performance settings
+    pub perf_data_buffer_size: usize,
+    pub perf_fs_queue_size: usize,
 
     /// File/directory names to be ignored, at any level
     /// "*" represents any number of characters, including leading "."
@@ -173,10 +175,36 @@ impl ConfigCtx {
 
         let mut instance = Self {
             local_metadata_snap_path_user,
-            performance: config.performance,
+            perf_data_buffer_size: config.performance.data_buffer_size.as_nb_bytes(),
+            perf_fs_queue_size: config.performance.fs_queue_size,
             filter_ignore_name,
             filter_ignore_path,
             filter_white_list,
+            file_matcher: None,
+        };
+        instance.add_file_matcher()?;
+        Ok(instance)
+    }
+
+    /// Get configuration context from configuration provided by master
+    ///
+    /// # Errors
+    /// * internal error
+    pub fn from_master_config(
+        local_config: Config,
+        master_config: proto::remote::Config,
+    ) -> anyhow::Result<Self> {
+        let local_metadata_snap_path_user = local_config
+            .local_metadata_snap_path
+            .join(std::env::var("USER").unwrap_or_else(|_| String::from("nobody")));
+
+        let mut instance = Self {
+            local_metadata_snap_path_user,
+            perf_data_buffer_size: master_config.perf_data_buffer_size.try_into()?,
+            perf_fs_queue_size: master_config.perf_fs_queue_size as usize,
+            filter_ignore_name: master_config.filter_ignore_name,
+            filter_ignore_path: master_config.filter_ignore_path,
+            filter_white_list: master_config.filter_white_list,
             file_matcher: None,
         };
         instance.add_file_matcher()?;
@@ -300,8 +328,8 @@ pub mod tests {
             config.local_metadata_snap_path_user,
             PathBuf::from("/invalid/path").join(std::env::var("USER").unwrap())
         );
-        assert_eq!(config.performance.data_buffer_size, MemSize::new(64 * 1024));
-        assert_eq!(config.performance.fs_queue_size, 16);
+        assert_eq!(config.perf_data_buffer_size, 64 * 1024);
+        assert_eq!(config.perf_fs_queue_size, 16);
         assert_eq!(
             config.filter_ignore_name,
             vec![
