@@ -53,6 +53,7 @@ pub mod sync_exec;
 pub mod sync_plan;
 pub mod tree;
 pub mod tree_local;
+pub mod tree_remote;
 
 /// Dir-sync
 ///

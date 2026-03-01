@@ -50,6 +50,7 @@ impl AsRef<dyn TreeMetadata> for Box<dyn Tree + Send + Sync> {
     }
 }
 
+/// Path to one tree (local or remote)
 pub struct TreePath {
     /// Local path to the tree
     pub path: String,
@@ -83,4 +84,22 @@ impl TreePath {
             }
         }
     }
+}
+
+/// State for metadata
+pub enum TreeMetadataState {
+    /// Walking of the directory is on-going, handler to get the result
+    Processing(Receiver<Box<TreeWalkOutput>>),
+    /// Result is already available
+    Received(Box<TreeWalkOutput>),
+    /// Result has been consumed
+    Terminated,
+}
+
+/// Output of the walk task
+pub struct TreeWalkOutput {
+    /// Metadata snapshot of the tree
+    pub snap: MyDirEntry,
+    /// Previous sync snapshot for the tree, if any
+    pub prev_sync_snap: Option<MetadataSnap>,
 }

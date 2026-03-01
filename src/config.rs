@@ -129,12 +129,12 @@ pub struct ConfigCtx {
 
     /// File/directory names to be ignored, at any level
     /// "*" represents any number of characters, including leading "."
-    filter_ignore_name: Vec<String>,
+    pub filter_ignore_name: Vec<String>,
     /// Relative paths to be ignored
     /// "*" represents any number of characters excluding "/"
-    filter_ignore_path: Vec<String>,
+    pub filter_ignore_path: Vec<String>,
     /// Relative paths to be considered, even if a parent folder is ignored
-    filter_white_list: Vec<String>,
+    pub filter_white_list: Vec<String>,
 
     /// Determine name/paths to be ignored
     pub file_matcher: Option<FileMatcher>,

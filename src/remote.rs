@@ -33,17 +33,17 @@ pub async fn remote_main(task_tracker: TaskTracker) -> TrackedTaskResult {
     // 2. wait for configuration
     let master_config: Request = remote_in.recv().await?;
     let Some(RemoteReq::Config(mut master_config)) = master_config.req else {
-        anyhow::bail!("internal error: expecting configuration RemoteReq");
+        anyhow::bail!("internal error: expecting RemoteReq::Config");
     };
     let path = std::mem::take(&mut master_config.path);
     let ts = master_config
         .ts
         .ok_or_else(|| anyhow::anyhow!("internal error: missing ts field in Config"))?;
-    let sync_paths = std::mem::take(&mut master_config.sync_paths);
+    let sync_fqns = std::mem::take(&mut master_config.sync_fqns);
     let config = Arc::new(ConfigCtx::from_master_config(local_config, master_config)?);
 
     // 3. spawn TreeLocal
-    let mut tree = TreeLocal::spawn(config, &task_tracker, &path, ts, sync_paths)?;
+    let mut tree = TreeLocal::spawn(config, &task_tracker, &path, ts, sync_fqns)?;
 
     // 4. wait for completion
     tokio::select! {

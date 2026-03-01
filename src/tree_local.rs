@@ -21,31 +21,15 @@ use crate::proto::{
     action::{DeleteEntryReq, ErrorRsp, FileReadReq, FileWriteReq, UpdateMetadataReq},
 };
 use crate::snap::SnapAccess;
-use crate::tree::{ActionReqSender, ActionRspReceiver, Tree, TreeMetadata};
+use crate::tree::{
+    ActionReqSender, ActionRspReceiver, Tree, TreeMetadata, TreeMetadataState, TreeWalkOutput,
+};
 
 /// Temporary file used by dir-sync to update a file
 ///
 /// The file is firstly created using this temp name, updated with data + metadata,
 /// then renamed to its final name (potentially overwriting an existing file atomically)
 const TEMP_FILE: &str = ".dir_sync.tmp";
-
-/// State for metadata
-enum LocalMetadataState {
-    /// Walking of the directory is on-going, handler to get the result
-    Processing(Receiver<Box<WalkOutput>>),
-    /// Result is already available
-    Received(Box<WalkOutput>),
-    /// Result has been consumed
-    Terminated,
-}
-
-/// Output of the walk task
-struct WalkOutput {
-    /// Metadata snapshot of the tree
-    snap: MyDirEntry,
-    /// Previous sync snapshot for the tree, if any
-    prev_sync_snap: Option<MetadataSnap>,
-}
 
 /// Context for walking the tree
 struct WalkCtx {
@@ -439,7 +423,7 @@ pub struct TreeLocal {
     /// Action responder
     receiver_act_rsp: ActionRspReceiver,
     /// Current state
-    metadata_state: LocalMetadataState,
+    metadata_state: TreeMetadataState,
     /// Syncs retrieved from the previous metadata snapshot
     last_syncs: BTreeMap<String, Timestamp>,
     /// Other paths to perform synchronization with
@@ -515,7 +499,7 @@ impl TreeLocal {
             fs_tree,
             sender_act_req,
             receiver_act_rsp,
-            metadata_state: LocalMetadataState::Processing(receiver_snap),
+            metadata_state: TreeMetadataState::Processing(receiver_snap),
             last_syncs,
             sync_fqns,
         })
@@ -529,7 +513,7 @@ impl TreeLocal {
         prev_snap: Option<MyDirEntry>,
         sync_fqns: Arc<Vec<String>>, // other paths to perform synchronization with
         snap_access: SnapAccess,
-        sender_snap: Sender<Box<WalkOutput>>,
+        sender_snap: Sender<Box<TreeWalkOutput>>,
     ) -> anyhow::Result<TaskExit> {
         log::info!("tree[{fs_tree}]: starting walk");
 
@@ -560,7 +544,7 @@ impl TreeLocal {
             })
             .flatten();
 
-        sender_snap.send(Box::new(WalkOutput {
+        sender_snap.send(Box::new(TreeWalkOutput {
             snap,
             prev_sync_snap,
         }))?;
@@ -570,7 +554,7 @@ impl TreeLocal {
 
 impl TreeMetadata for TreeLocal {
     fn get_entry(&self, rel_path: &str) -> Option<&MyDirEntry> {
-        let LocalMetadataState::Received(output) = &self.metadata_state else {
+        let TreeMetadataState::Received(output) = &self.metadata_state else {
             panic!("inconsistent state, call wait_for_tree() first");
         };
         output.snap.get_entry(rel_path)
@@ -590,9 +574,9 @@ impl TreeMetadata for TreeLocal {
 #[async_trait::async_trait]
 impl Tree for TreeLocal {
     async fn wait_for_tree(&mut self) -> anyhow::Result<()> {
-        if let LocalMetadataState::Processing(receiver_snap) = &self.metadata_state {
+        if let TreeMetadataState::Processing(receiver_snap) = &self.metadata_state {
             let snap = receiver_snap.recv_async().await?;
-            self.metadata_state = LocalMetadataState::Received(snap);
+            self.metadata_state = TreeMetadataState::Received(snap);
         }
         Ok(())
     }
@@ -606,8 +590,8 @@ impl Tree for TreeLocal {
     }
 
     fn save_snap(&mut self, sync: bool) {
-        if let LocalMetadataState::Received(output) =
-            std::mem::replace(&mut self.metadata_state, LocalMetadataState::Terminated)
+        if let TreeMetadataState::Received(output) =
+            std::mem::replace(&mut self.metadata_state, TreeMetadataState::Terminated)
         {
             log::info!("tree[{}]: saving snap", self.fs_tree);
             // restore last_syncs from loaded snapshot
@@ -641,7 +625,7 @@ impl Tree for TreeLocal {
     }
 
     fn take_prev_sync_snap(&mut self) -> Option<MetadataSnap> {
-        if let LocalMetadataState::Received(output) = &mut self.metadata_state {
+        if let TreeMetadataState::Received(output) = &mut self.metadata_state {
             output.prev_sync_snap.take()
         } else {
             None
