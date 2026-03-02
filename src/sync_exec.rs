@@ -418,6 +418,8 @@ mod tests {
 
         fn save_snap(&mut self, _sync: bool) {}
 
+        async fn terminate(&mut self) {}
+
         fn take_prev_sync_snap(&mut self) -> Option<crate::proto::MetadataSnap> {
             None
         }

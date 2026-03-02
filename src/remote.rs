@@ -7,9 +7,13 @@ use crate::generic::prost_stream::{ProstRead, ProstWrite};
 use crate::generic::task_tracker::{TaskExit, TaskTracker, TrackedTaskResult};
 use crate::proto::action::ActionRsp;
 use crate::proto::remote::{Request, Response, WalkOutput};
-use crate::proto::{REMOTE_PROTOCOL_VERSION, RemoteReq, RemoteRsp};
+use crate::proto::{PROTO_NULL_VALUE, REMOTE_PROTOCOL_VERSION, RemoteReq, RemoteRsp};
 use crate::tree::{Tree as _, TreeMetadata as _};
 use crate::tree_local::TreeLocal;
+
+enum RemoteEvent {
+    SnapSaved,
+}
 
 /// Main function for remote instance
 ///
@@ -65,15 +69,37 @@ pub async fn remote_main(task_tracker: TaskTracker) -> TrackedTaskResult {
         .await?;
 
     // 6. manage tree responses, forward to stdout
+    let (event_sender, event_receiver) = flume::bounded(2);
     task_tracker.spawn({
         let tree_action_response = tree.get_fs_action_responder();
         async move {
-            while let Ok(rsp) = tree_action_response.recv_async().await {
-                remote_out
-                    .send(&Response {
-                        rsp: Some(RemoteRsp::ActionRsp(ActionRsp { rsp: Some(rsp) })),
-                    })
-                    .await?;
+            loop {
+                tokio::select! {
+                    rsp = tree_action_response.recv_async() => {
+                        if let Ok(rsp) = rsp {
+                            remote_out.send(&Response {
+                                rsp: Some(RemoteRsp::ActionRsp(ActionRsp { rsp: Some(rsp) })),
+                            })
+                            .await?;
+                        } else {
+                            break;
+                        }
+                    }
+                    event = event_receiver.recv_async() => {
+                        if let Ok(event) = event {
+                            match event {
+                                RemoteEvent::SnapSaved => {
+                                    remote_out.send(&Response {
+                                    rsp: Some(RemoteRsp::SnapSaved(PROTO_NULL_VALUE)),
+                                    })
+                                    .await?;
+                                }
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
             }
             Ok(TaskExit::SecondaryTaskKeepRunning)
         }
@@ -94,13 +120,14 @@ pub async fn remote_main(task_tracker: TaskTracker) -> TrackedTaskResult {
                     anyhow::bail!("internal error: missing ActionReq");
                 }
             }
+            Some(RemoteReq::SaveSnap(sync)) => {
+                tree.save_snap(sync);
+                event_sender.send(RemoteEvent::SnapSaved)?;
+            }
             Some(RemoteReq::Terminate(_)) => break,
             None => anyhow::bail!("internal error: missing RemoteReq"),
         }
     }
-
-    // 8. clean exit
-    tree.save_snap(true);
 
     Ok(TaskExit::MainTaskStopAppSuccess)
 }

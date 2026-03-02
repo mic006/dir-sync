@@ -624,6 +624,8 @@ impl Tree for TreeLocal {
         }
     }
 
+    async fn terminate(&mut self) {}
+
     fn take_prev_sync_snap(&mut self) -> Option<MetadataSnap> {
         if let TreeMetadataState::Received(output) = &mut self.metadata_state {
             output.prev_sync_snap.take()

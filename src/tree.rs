@@ -37,6 +37,9 @@ pub trait Tree: TreeMetadata {
     /// Save snapshot file, update sync information if `sync` is true
     fn save_snap(&mut self, sync: bool);
 
+    /// Clean termination of the tree
+    async fn terminate(&mut self);
+
     /// Get snapshot of the previous synchronization
     fn take_prev_sync_snap(&mut self) -> Option<MetadataSnap>;
 }

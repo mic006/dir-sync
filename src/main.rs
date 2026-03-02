@@ -21,6 +21,7 @@ use crate::snap::list_snaps_stdout;
 use crate::sync_plan::SyncMode;
 use crate::tree::{Tree, TreePath};
 use crate::tree_local::TreeLocal;
+use crate::tree_remote::TreeRemote;
 
 pub mod config;
 pub mod diff;
@@ -256,7 +257,7 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
     );
 
     // spawn all trees
-    let mut ctx = RunContext::new(&task_tracker, &arg, false)?;
+    let mut ctx = RunContext::new(&task_tracker, &arg, false).await?;
     // wait for tree walk completion
     for tree in &mut ctx.trees {
         tree.wait_for_tree().await?;
@@ -264,7 +265,7 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
 
     // perform diff
     let diffs = crate::diff::diff_trees(task_tracker, &ctx.trees, mode);
-    ctx.save_snaps(false);
+    ctx.save_snaps_and_terminate(false).await;
     let diffs = diffs?;
 
     match mode {
@@ -294,7 +295,7 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
     );
 
     // spawn all trees
-    let mut ctx = RunContext::new(&task_tracker, &arg, true)?;
+    let mut ctx = RunContext::new(&task_tracker, &arg, true).await?;
     // wait for tree walk completion
     for tree in &mut ctx.trees {
         tree.wait_for_tree().await?;
@@ -315,7 +316,7 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
     crate::sync_plan::sync_plan(task_tracker.clone(), prev_sync_snaps, sync_mode, &mut diffs)?;
 
     if arg.dry_run {
-        ctx.save_snaps(false);
+        ctx.save_snaps_and_terminate(false).await;
         let mut stdout = std::io::stdout();
         if diffs.is_empty() {
             let _ignored = writeln!(stdout, "No difference found between inputs");
@@ -330,7 +331,7 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
         }
     } else {
         sync_exec::sync_exec(task_tracker, &mut ctx.trees, &diffs).await?;
-        ctx.save_snaps(true);
+        ctx.save_snaps_and_terminate(true).await;
     }
 
     Ok(TaskExit::MainTaskStopAppSuccess)
@@ -342,9 +343,9 @@ async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTa
         "RefreshMetadataSnap mode: expects a single directory"
     );
 
-    let mut ctx = RunContext::new(&task_tracker, &arg, false)?;
+    let mut ctx = RunContext::new(&task_tracker, &arg, false).await?;
     ctx.trees[0].wait_for_tree().await?;
-    ctx.save_snaps(false);
+    ctx.save_snaps_and_terminate(false).await;
 
     Ok(TaskExit::MainTaskStopAppSuccess)
 }
@@ -360,7 +361,7 @@ struct RunContext {
 }
 
 impl RunContext {
-    fn new(task_tracker: &TaskTracker, arg: &Arg, sync_mode: bool) -> anyhow::Result<Self> {
+    async fn new(task_tracker: &TaskTracker, arg: &Arg, sync_mode: bool) -> anyhow::Result<Self> {
         let config = Config::from_file(None)?;
         let config = Arc::new(ConfigCtx::from_config_file(config, arg.profile.as_deref())?);
         let ts = Timestamp::now();
@@ -393,12 +394,12 @@ impl RunContext {
             } else {
                 vec![]
             };
-            instance.spawn_tree(task_tracker, tp, sync_fqns)?;
+            instance.spawn_tree(task_tracker, tp, sync_fqns).await?;
         }
         Ok(instance)
     }
 
-    fn spawn_tree(
+    async fn spawn_tree(
         &mut self,
         task_tracker: &TaskTracker,
         tp: &TreePath,
@@ -417,7 +418,11 @@ impl RunContext {
             self.trees.push(tree);
         } else {
             // remote tree
-            todo!();
+            let tree = Box::new(
+                TreeRemote::spawn(self.config.clone(), task_tracker, tp, self.ts, sync_fqns)
+                    .await?,
+            );
+            self.trees.push(tree);
         }
         Ok(())
     }
@@ -444,9 +449,13 @@ impl RunContext {
         )
     }
 
-    fn save_snaps(&mut self, sync: bool) {
+    async fn save_snaps_and_terminate(&mut self, sync: bool) {
         // parallelized: save snap of each tree
         self.trees.par_iter_mut().for_each(|t| t.save_snap(sync));
+
+        for tree in &mut self.trees {
+            tree.terminate().await;
+        }
     }
 }
 

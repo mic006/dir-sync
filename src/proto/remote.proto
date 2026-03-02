@@ -36,8 +36,10 @@ message Request {
     Config config = 1;
     // filesystem action request
     action.ActionReq action_req = 2;
+    // save snap file, update sync information based on boolean value
+    bool save_snap = 3;
     // clean termination request
-    google.protobuf.NullValue terminate = 3;
+    google.protobuf.NullValue terminate = 4;
   }
 }
 
@@ -57,5 +59,7 @@ message Response {
     WalkOutput walk_output = 2;
     // filesystem action response
     action.ActionRsp action_rsp = 3;
+    // snap save done
+    google.protobuf.NullValue snap_saved = 4;
   }
 }
