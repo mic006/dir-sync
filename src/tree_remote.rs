@@ -57,6 +57,7 @@ impl TreeRemote {
     /// - communication errors
     #[allow(clippy::cast_possible_truncation)]
     pub async fn spawn(
+        log: bool,
         config: ConfigRef,
         task_tracker: &TaskTracker,
         tp: &TreePath,          // path to walk
@@ -66,15 +67,17 @@ impl TreeRemote {
         let fqn = tp.fqn.clone();
         // 1. spawn instance
         log::info!("tree_remote[{fqn}]: spawning child process over ssh");
-        let mut child = Command::new("ssh")
-            .arg(&tp.hostname)
+        let mut cmd = Command::new("ssh");
+        cmd.arg(&tp.hostname)
             .args(["-e", "none", "dir-sync", "--remote"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
-        // TODO: add log options if log is requested
+            .kill_on_drop(true);
+        if log {
+            cmd.args(["--log", "stderr"]);
+        }
+        let mut child = cmd.spawn()?;
 
         let mut remote_in = ProstWrite::new(child.stdin.take().unwrap());
         let mut remote_out = ProstRead::new(child.stdout.take().unwrap());
@@ -315,11 +318,28 @@ impl Tree for TreeRemote {
     }
 
     async fn terminate(&mut self) {
+        log::info!(
+            "tree_remote[{}]: send termination request to child",
+            self.fqn
+        );
         let _ignored = self
             .sender_request
             .send_async(RemoteRequest::Terminate)
             .await;
-        todo!("join child process");
+        match self.child.wait().await {
+            Ok(status) => {
+                log::info!(
+                    "tree_remote[{}]: child terminated with status {status:?}",
+                    self.fqn
+                );
+            }
+            Err(err) => {
+                log::info!(
+                    "tree_remote[{}]: error while terminating child process; {err}",
+                    self.fqn
+                );
+            }
+        }
     }
 
     fn take_prev_sync_snap(&mut self) -> Option<MetadataSnap> {

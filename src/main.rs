@@ -354,6 +354,8 @@ async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTa
 struct RunContext {
     /// Configuration
     config: ConfigRef,
+    /// Log enabled ?
+    log: bool,
     /// Timestamp of the snapshot
     ts: Timestamp,
     /// Trees to compare
@@ -367,6 +369,7 @@ impl RunContext {
         let ts = Timestamp::now();
 
         let mut instance = Self {
+            log: arg.log.is_some(),
             config,
             ts,
             trees: Vec::with_capacity(arg.dirs.len()),
@@ -419,8 +422,15 @@ impl RunContext {
         } else {
             // remote tree
             let tree = Box::new(
-                TreeRemote::spawn(self.config.clone(), task_tracker, tp, self.ts, sync_fqns)
-                    .await?,
+                TreeRemote::spawn(
+                    self.log,
+                    self.config.clone(),
+                    task_tracker,
+                    tp,
+                    self.ts,
+                    sync_fqns,
+                )
+                .await?,
             );
             self.trees.push(tree);
         }
