@@ -59,6 +59,9 @@ where
     /// In the tree, the entry is kept (so name is still valid, allowing binary_search)
     /// but specific field is taken
     fn take_entry(&mut self, rel_path: &str) -> Option<MyDirEntry>;
+
+    /// Get content of one directory in the tree (sorted)
+    fn get_dir_content(&self, rel_path: &str) -> &[MyDirEntry];
 }
 
 impl MyDirEntryExt for MyDirEntry {
@@ -123,6 +126,16 @@ impl MyDirEntryExt for MyDirEntry {
             specific: src_entry.specific.take(),
             ..*src_entry
         })
+    }
+
+    fn get_dir_content(&self, rel_path: &str) -> &[MyDirEntry] {
+        let Some(entry) = self.get_entry(rel_path) else {
+            return &[];
+        };
+        let Some(Specific::Directory(dir_data)) = &entry.specific else {
+            return &[];
+        };
+        &dir_data.content
     }
 }
 

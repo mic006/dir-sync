@@ -14,12 +14,11 @@ use crate::generic::prost_stream::{ProstRead, ProstWrite};
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
 use crate::proto::remote::{Request, Response};
 use crate::proto::{
-    self, ActionReq, ActionRsp, MetadataSnap, MyDirEntry, MyDirEntryExt as _, PROTO_NULL_VALUE,
-    REMOTE_PROTOCOL_VERSION, RemoteReq, RemoteRsp, Specific, Timestamp,
+    self, ActionReq, ActionRsp, MetadataSnap, MyDirEntry, PROTO_NULL_VALUE,
+    REMOTE_PROTOCOL_VERSION, RemoteReq, RemoteRsp, Timestamp,
 };
 use crate::tree::{
-    ActionReqSender, ActionRspReceiver, Tree, TreeMetadata, TreeMetadataState, TreePath,
-    TreeWalkOutput,
+    ActionReqSender, ActionRspReceiver, Tree, TreeMetadataState, TreePath, TreeWalkOutput,
 };
 
 enum RemoteRequest {
@@ -245,25 +244,6 @@ impl TreeRemote {
     }
 }
 
-impl TreeMetadata for TreeRemote {
-    fn get_entry(&self, rel_path: &str) -> Option<&MyDirEntry> {
-        let TreeMetadataState::Received(output) = &self.metadata_state else {
-            panic!("inconsistent state, call wait_for_tree() first");
-        };
-        output.snap.get_entry(rel_path)
-    }
-
-    fn get_dir_content(&self, rel_path: &str) -> &[MyDirEntry] {
-        let Some(entry) = self.get_entry(rel_path) else {
-            return &[];
-        };
-        let Some(Specific::Directory(dir_data)) = &entry.specific else {
-            return &[];
-        };
-        &dir_data.content
-    }
-}
-
 #[async_trait::async_trait]
 impl Tree for TreeRemote {
     async fn wait_for_tree(&mut self) -> anyhow::Result<()> {
@@ -272,6 +252,13 @@ impl Tree for TreeRemote {
             self.metadata_state = TreeMetadataState::Received(snap);
         }
         Ok(())
+    }
+
+    fn get_root_entry(&self) -> anyhow::Result<&MyDirEntry> {
+        let TreeMetadataState::Received(output) = &self.metadata_state else {
+            anyhow::bail!("inconsistent state, call wait_for_tree() first");
+        };
+        Ok(&output.snap)
     }
 
     fn get_fs_action_requester(&self) -> ActionReqSender {

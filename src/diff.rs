@@ -6,7 +6,6 @@ use rayon::prelude::*;
 
 use crate::generic::task_tracker::{ShutdownReqError, TaskTracker};
 use crate::proto::{MyDirEntry, MyDirEntryExt, Specific};
-use crate::tree::TreeMetadata;
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq)]
@@ -133,16 +132,13 @@ pub enum DiffMode {
 }
 
 /// Context for performing diff of the trees
-struct DiffCtx<'a, T> {
+struct DiffCtx<'a> {
     task_tracker: TaskTracker,
-    trees: &'a [T],
+    trees: &'a [&'a MyDirEntry],
     mode: DiffMode,
 }
 
-impl<T> DiffCtx<'_, T>
-where
-    T: AsRef<dyn TreeMetadata> + Sync,
-{
+impl DiffCtx<'_> {
     fn diff_recursive(&self, rel_path: String) -> anyhow::Result<Vec<DiffEntry>> {
         self.task_tracker.get_shutdown_req_as_result()?;
         log::debug!("diff: entering {rel_path}");
@@ -155,7 +151,7 @@ where
         let dir_contents = self
             .trees
             .iter()
-            .map(|t| t.as_ref().get_dir_content(&rel_path))
+            .map(|t| t.get_dir_content(&rel_path))
             .collect::<Vec<_>>();
 
         let mut indexes = vec![0_usize; nb_trees];
@@ -275,14 +271,11 @@ where
 ///
 /// # Errors
 /// - termination requested
-pub fn diff_trees<T>(
+pub fn diff_trees(
     task_tracker: TaskTracker,
-    trees: &[T],
+    trees: &[&MyDirEntry],
     mode: DiffMode,
-) -> anyhow::Result<Vec<DiffEntry>>
-where
-    T: AsRef<dyn TreeMetadata> + Sync,
-{
+) -> anyhow::Result<Vec<DiffEntry>> {
     log::info!("diff: starting");
 
     let ctx = DiffCtx {
@@ -301,7 +294,6 @@ mod tests {
     use super::*;
     use crate::generic::task_tracker::tests::dummy_task_tracker;
     use crate::proto::{DirectoryData, MyDirEntry, RegularData, Specific};
-    use crate::tree::TreeMetadata;
     use prost_types::Timestamp;
 
     fn create_file_entry(file_name: &str, size: u64, hash: u64) -> MyDirEntry {
@@ -427,31 +419,6 @@ mod tests {
         assert_eq!(diff_entries(&a, &b), expected);
     }
 
-    struct MockTree {
-        root: MyDirEntry,
-    }
-
-    impl TreeMetadata for MockTree {
-        fn get_entry(&self, rel_path: &str) -> Option<&MyDirEntry> {
-            self.root.get_entry(rel_path)
-        }
-
-        fn get_dir_content(&self, rel_path: &str) -> &[MyDirEntry] {
-            if let Some(entry) = self.root.get_entry(rel_path)
-                && let Some(Specific::Directory(data)) = &entry.specific
-            {
-                return &data.content;
-            }
-            &[]
-        }
-    }
-
-    impl AsRef<dyn TreeMetadata> for MockTree {
-        fn as_ref(&self) -> &(dyn TreeMetadata + 'static) {
-            self
-        }
-    }
-
     fn create_root(content: Vec<MyDirEntry>) -> MyDirEntry {
         create_dir_entry("dir", content)
     }
@@ -461,12 +428,8 @@ mod tests {
         crate::generic::test::log_init();
 
         let content = vec![create_file_entry("file.txt", 10, 100)];
-        let tree1 = MockTree {
-            root: create_root(content.clone()),
-        };
-        let tree2 = MockTree {
-            root: create_root(content),
-        };
+        let tree1 = create_root(content.clone());
+        let tree2 = create_root(content);
         let task_tracker = dummy_task_tracker();
         let diffs = diff_trees(task_tracker, &[&tree1, &tree2], DiffMode::Output);
         let diffs = diffs.unwrap();
@@ -477,13 +440,9 @@ mod tests {
     fn test_diff_trees_added_file() {
         crate::generic::test::log_init();
 
-        let tree1 = MockTree {
-            root: create_root(vec![]),
-        };
+        let tree1 = create_root(vec![]);
         let content2 = vec![create_file_entry("file.txt", 10, 100)];
-        let tree2 = MockTree {
-            root: create_root(content2),
-        };
+        let tree2 = create_root(content2);
         let task_tracker = dummy_task_tracker();
         let diffs = diff_trees(task_tracker, &[&tree1, &tree2], DiffMode::Output);
         let diffs = diffs.unwrap();
@@ -499,12 +458,8 @@ mod tests {
         crate::generic::test::log_init();
 
         let content1 = vec![create_file_entry("file.txt", 10, 100)];
-        let tree1 = MockTree {
-            root: create_root(content1),
-        };
-        let tree2 = MockTree {
-            root: create_root(vec![]),
-        };
+        let tree1 = create_root(content1);
+        let tree2 = create_root(vec![]);
         let task_tracker = dummy_task_tracker();
         let diffs = diff_trees(task_tracker, &[&tree1, &tree2], DiffMode::Output);
         let diffs = diffs.unwrap();
@@ -520,13 +475,9 @@ mod tests {
         crate::generic::test::log_init();
 
         let content1 = vec![create_file_entry("file.txt", 10, 100)];
-        let tree1 = MockTree {
-            root: create_root(content1),
-        };
+        let tree1 = create_root(content1);
         let content2 = vec![create_file_entry("file.txt", 20, 200)];
-        let tree2 = MockTree {
-            root: create_root(content2),
-        };
+        let tree2 = create_root(content2);
         let task_tracker = dummy_task_tracker();
         let diffs = diff_trees(task_tracker, &[&tree1, &tree2], DiffMode::Output);
         let diffs = diffs.unwrap();
@@ -545,16 +496,12 @@ mod tests {
             "dir",
             vec![create_file_entry("nested.txt", 10, 100)],
         )];
-        let tree1 = MockTree {
-            root: create_root(content1),
-        };
+        let tree1 = create_root(content1);
         let content2 = vec![create_dir_entry(
             "dir",
             vec![create_file_entry("nested.txt", 20, 200)],
         )];
-        let tree2 = MockTree {
-            root: create_root(content2),
-        };
+        let tree2 = create_root(content2);
         let task_tracker = dummy_task_tracker();
         let diffs = diff_trees(task_tracker, &[&tree1, &tree2], DiffMode::Output);
         let diffs = diffs.unwrap();
@@ -568,16 +515,10 @@ mod tests {
         crate::generic::test::log_init();
 
         let content1 = vec![create_file_entry("file.txt", 10, 100)];
-        let tree1 = MockTree {
-            root: create_root(content1),
-        };
+        let tree1 = create_root(content1);
         let content2 = vec![create_file_entry("file.txt", 20, 200)];
-        let tree2 = MockTree {
-            root: create_root(content2),
-        };
-        let tree3 = MockTree {
-            root: create_root(vec![]),
-        };
+        let tree2 = create_root(content2);
+        let tree3 = create_root(vec![]);
         let task_tracker = dummy_task_tracker();
         let diffs = diff_trees(task_tracker, &[&tree1, &tree2, &tree3], DiffMode::Output);
         let diffs = diffs.unwrap();

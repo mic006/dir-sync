@@ -8,7 +8,7 @@ use crate::generic::task_tracker::{TaskExit, TaskTracker, TrackedTaskResult};
 use crate::proto::action::ActionRsp;
 use crate::proto::remote::{Request, Response, WalkOutput};
 use crate::proto::{PROTO_NULL_VALUE, REMOTE_PROTOCOL_VERSION, RemoteReq, RemoteRsp};
-use crate::tree::{Tree as _, TreeMetadata as _};
+use crate::tree::Tree as _;
 use crate::tree_local::TreeLocal;
 
 enum RemoteEvent {
@@ -62,7 +62,7 @@ pub async fn remote_main(task_tracker: TaskTracker) -> TrackedTaskResult {
     remote_out
         .send(&Response {
             rsp: Some(RemoteRsp::WalkOutput(WalkOutput {
-                snap: tree.get_entry(".").cloned(),
+                snap: Some(tree.get_root_entry()?.clone()),
                 prev_sync_snap: tree.take_prev_sync_snap(),
             })),
         })

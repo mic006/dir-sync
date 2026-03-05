@@ -392,20 +392,14 @@ mod tests {
         }
     }
 
-    impl crate::tree::TreeMetadata for MockTree {
-        fn get_entry(&self, _rel_path: &str) -> Option<&MyDirEntry> {
-            None
-        }
-
-        fn get_dir_content(&self, _rel_path: &str) -> &[MyDirEntry] {
-            &[]
-        }
-    }
-
     #[async_trait::async_trait]
     impl Tree for MockTree {
         async fn wait_for_tree(&mut self) -> anyhow::Result<()> {
             Ok(())
+        }
+
+        fn get_root_entry(&self) -> anyhow::Result<&MyDirEntry> {
+            unreachable!("mock");
         }
 
         fn get_fs_action_requester(&self) -> ActionReqSender {

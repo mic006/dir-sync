@@ -21,9 +21,7 @@ use crate::proto::{
     action::{DeleteEntryReq, ErrorRsp, FileReadReq, FileWriteReq, UpdateMetadataReq},
 };
 use crate::snap::SnapAccess;
-use crate::tree::{
-    ActionReqSender, ActionRspReceiver, Tree, TreeMetadata, TreeMetadataState, TreeWalkOutput,
-};
+use crate::tree::{ActionReqSender, ActionRspReceiver, Tree, TreeMetadataState, TreeWalkOutput};
 
 /// Temporary file used by dir-sync to update a file
 ///
@@ -552,25 +550,6 @@ impl TreeLocal {
     }
 }
 
-impl TreeMetadata for TreeLocal {
-    fn get_entry(&self, rel_path: &str) -> Option<&MyDirEntry> {
-        let TreeMetadataState::Received(output) = &self.metadata_state else {
-            panic!("inconsistent state, call wait_for_tree() first");
-        };
-        output.snap.get_entry(rel_path)
-    }
-
-    fn get_dir_content(&self, rel_path: &str) -> &[MyDirEntry] {
-        let Some(entry) = self.get_entry(rel_path) else {
-            return &[];
-        };
-        let Some(Specific::Directory(dir_data)) = &entry.specific else {
-            return &[];
-        };
-        &dir_data.content
-    }
-}
-
 #[async_trait::async_trait]
 impl Tree for TreeLocal {
     async fn wait_for_tree(&mut self) -> anyhow::Result<()> {
@@ -579,6 +558,13 @@ impl Tree for TreeLocal {
             self.metadata_state = TreeMetadataState::Received(snap);
         }
         Ok(())
+    }
+
+    fn get_root_entry(&self) -> anyhow::Result<&MyDirEntry> {
+        let TreeMetadataState::Received(output) = &self.metadata_state else {
+            anyhow::bail!("inconsistent state, call wait_for_tree() first");
+        };
+        Ok(&output.snap)
     }
 
     fn get_fs_action_requester(&self) -> ActionReqSender {
@@ -692,8 +678,9 @@ mod tests {
 
         tree.wait_for_tree().await?;
 
+        let root_entry = tree.get_root_entry()?;
         {
-            let root_content = tree.get_dir_content(".");
+            let root_content = root_entry.get_dir_content(".");
             //println!("{root_content:#?}");
             assert_eq!(root_content.len(), 6);
             let file_names: Vec<_> = root_content.iter().map(|e| e.file_name.as_str()).collect();
@@ -710,13 +697,13 @@ mod tests {
             );
         }
         {
-            let sub_content = tree.get_dir_content("./sub folder 2 €");
+            let sub_content = root_entry.get_dir_content("./sub folder 2 €");
             //println!("{sub_content:#?}");
             assert_eq!(sub_content.len(), 1);
             assert_eq!(sub_content[0].file_name, "beta");
         }
         {
-            let entry = tree.get_entry("./sub folder 2 €/beta").unwrap();
+            let entry = root_entry.get_entry("./sub folder 2 €/beta").unwrap();
             assert_eq!(entry.file_name, "beta");
             let Some(Specific::Regular(file_data)) = &entry.specific else {
                 panic!("beta file error");
@@ -730,7 +717,7 @@ mod tests {
             );
         }
         {
-            let entry = tree.get_entry("./some_link").unwrap();
+            let entry = root_entry.get_entry("./some_link").unwrap();
             let Some(Specific::Symlink(symlink_data)) = &entry.specific else {
                 panic!("some_link error");
             };

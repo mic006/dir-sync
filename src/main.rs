@@ -264,7 +264,8 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
     }
 
     // perform diff
-    let diffs = crate::diff::diff_trees(task_tracker, &ctx.trees, mode);
+    let root_entries = ctx.get_root_entries()?;
+    let diffs = crate::diff::diff_trees(task_tracker, &root_entries, mode);
     ctx.save_snaps_and_terminate(false).await;
     let diffs = diffs?;
 
@@ -302,7 +303,8 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
     }
 
     // perform diff
-    let mut diffs = crate::diff::diff_trees(task_tracker.clone(), &ctx.trees, DiffMode::Output)?;
+    let root_entries = ctx.get_root_entries()?;
+    let mut diffs = crate::diff::diff_trees(task_tracker.clone(), &root_entries, DiffMode::Output)?;
 
     // get prev_snaps from all trees
     let prev_sync_snaps = ctx.get_prev_sync_snaps();
@@ -457,6 +459,10 @@ impl RunContext {
                 .map(|snap| snap.root.unwrap())
                 .collect(),
         )
+    }
+
+    fn get_root_entries(&self) -> anyhow::Result<Vec<&MyDirEntry>> {
+        self.trees.iter().map(|t| t.get_root_entry()).collect()
     }
 
     async fn save_snaps_and_terminate(&mut self, sync: bool) {
