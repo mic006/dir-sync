@@ -155,6 +155,7 @@ struct OngoingWriteFile {
 /// Context to execute filesystem actions
 struct ActionCtx {
     fs_tree: Arc<FsTree>,
+    snap: Arc<Mutex<MyDirEntry>>,
     receiver: Receiver<Arc<ActionReq>>,
     sender: Sender<ActionRsp>,
     read_buf_size: usize,
@@ -404,6 +405,12 @@ impl ActionCtx {
     }
 }
 
+struct ActionDeps {
+    task_tracker: TaskTracker,
+    receiver_act_req: Receiver<Arc<ActionReq>>,
+    sender_act_rsp: Sender<ActionRsp>,
+}
+
 /// Manage one `Tree` on the local machine
 pub struct TreeLocal {
     /// Configuration
@@ -416,6 +423,8 @@ pub struct TreeLocal {
     ts: Timestamp,
     /// Root fd
     fs_tree: Arc<FsTree>,
+    /// Dependencies to launch `ActionCtx`
+    action_deps: Option<ActionDeps>,
     /// Action requester
     sender_act_req: ActionReqSender,
     /// Action responder
@@ -480,14 +489,6 @@ impl TreeLocal {
 
         let (sender_act_req, receiver_act_req) = flume::bounded(config.perf_fs_queue_size);
         let (sender_act_rsp, receiver_act_rsp) = flume::bounded(config.perf_fs_queue_size);
-        let mut action_ctx = ActionCtx {
-            fs_tree: fs_tree.clone(),
-            receiver: receiver_act_req,
-            sender: sender_act_rsp,
-            read_buf_size: config.perf_data_buffer_size,
-            ongoing_write_file: None,
-        };
-        task_tracker.spawn(async move { action_ctx.task().await })?;
 
         Ok(Self {
             config,
@@ -495,6 +496,11 @@ impl TreeLocal {
             snap_access,
             ts,
             fs_tree,
+            action_deps: Some(ActionDeps {
+                task_tracker: task_tracker.clone(),
+                receiver_act_req,
+                sender_act_rsp,
+            }),
             sender_act_req,
             receiver_act_rsp,
             metadata_state: TreeMetadataState::Processing(receiver_snap),
@@ -554,8 +560,23 @@ impl TreeLocal {
 impl Tree for TreeLocal {
     async fn wait_for_tree(&mut self) -> anyhow::Result<()> {
         if let TreeMetadataState::Processing(receiver_snap) = &self.metadata_state {
-            let snap = receiver_snap.recv_async().await?;
-            self.metadata_state = TreeMetadataState::Received(snap);
+            let walk_output = receiver_snap.recv_async().await?;
+            let snap = walk_output.snap.clone();
+
+            self.metadata_state = TreeMetadataState::Received(walk_output);
+
+            let actions_deps = self.action_deps.take().unwrap();
+            let mut action_ctx = ActionCtx {
+                fs_tree: self.fs_tree.clone(),
+                snap,
+                receiver: actions_deps.receiver_act_req,
+                sender: actions_deps.sender_act_rsp,
+                read_buf_size: self.config.perf_data_buffer_size,
+                ongoing_write_file: None,
+            };
+            actions_deps
+                .task_tracker
+                .spawn(async move { action_ctx.task().await })?;
         }
         Ok(())
     }
@@ -752,6 +773,7 @@ mod tests {
 
         let mut action_ctx = ActionCtx {
             fs_tree: fs_tree.clone(),
+            snap: Arc::default(),
             receiver: receiver_req,
             sender: sender_rsp,
             read_buf_size: 1024,
