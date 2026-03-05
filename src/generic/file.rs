@@ -5,6 +5,7 @@
 use std::ffi::CString;
 use std::fs::File;
 use std::os::fd::{FromRawFd as _, IntoRawFd as _, RawFd};
+use std::path::Path;
 
 use blake3::Hasher;
 use bytes::BufMut;
@@ -99,21 +100,17 @@ impl FsTree {
 
     /// Get file metadata (`fstatat`)
     ///
-    /// Note: `file_name` shall be a direct file entry in `dirfd` directory
-    ///
     /// # Errors
     /// - Returns error if the file metadata cannot be retrieved
-    pub fn stat(&self, file_name: &str) -> anyhow::Result<MyDirEntry> {
-        Self::statat(self.fd, file_name)
+    pub fn stat(&self, rel_path: &str) -> anyhow::Result<MyDirEntry> {
+        Self::statat(self.fd, rel_path)
     }
 
     /// Get file metadata (`fstatat`)
     ///
-    /// Note: `file_name` shall be a direct file entry in `dirfd` directory
-    ///
     /// # Errors
     /// - Returns error if the file metadata cannot be retrieved
-    fn statat(dirfd: RawFd, file_name: &str) -> anyhow::Result<MyDirEntry> {
+    fn statat(dirfd: RawFd, rel_path: &str) -> anyhow::Result<MyDirEntry> {
         /// Build `DeviceData` from rdev value
         fn build_device_data(rdev: u64) -> DeviceData {
             /// Get major id from rdev value
@@ -136,7 +133,7 @@ impl FsTree {
             }
         }
         unsafe {
-            let c_rel_path = CString::new(file_name)?;
+            let c_rel_path = CString::new(rel_path)?;
             let mut stat = std::mem::zeroed();
             let res = libc::fstatat(
                 dirfd,
@@ -146,7 +143,7 @@ impl FsTree {
             );
             anyhow::ensure!(
                 res == 0,
-                "FsTree::statat({file_name}) failed: {}",
+                "FsTree::statat({rel_path}) failed: {}",
                 std::io::Error::last_os_error()
             );
 
@@ -164,6 +161,7 @@ impl FsTree {
             } else if file_type == libc::S_IFREG {
                 Specific::Regular(RegularData {
                     size: stat.st_size.cast_unsigned(),
+                    // hash is computed by caller when appropriate
                     hash: Vec::default(),
                 })
             } else if file_type == libc::S_IFLNK {
@@ -176,7 +174,7 @@ impl FsTree {
                 );
                 anyhow::ensure!(
                     len >= 0,
-                    "FsTree::statat({file_name}) readlink failed: {}",
+                    "FsTree::statat({rel_path}) readlink failed: {}",
                     std::io::Error::last_os_error()
                 );
                 buf.truncate(len.cast_unsigned());
@@ -185,15 +183,21 @@ impl FsTree {
             } else if file_type == libc::S_IFSOCK {
                 Specific::Socket(PROTO_NULL_VALUE)
             } else {
-                anyhow::bail!("Unsupported file type at '{file_name}'");
+                anyhow::bail!("Unsupported file type at '{rel_path}'");
             };
             #[allow(clippy::cast_possible_truncation)]
             let mtime = Some(Timestamp {
                 seconds: stat.st_mtime,
                 nanos: stat.st_mtime_nsec as i32,
             });
+            let file_name = Path::new(rel_path)
+                .file_name()
+                .unwrap_or(std::ffi::OsStr::new("."))
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid UTF8 filename"))?
+                .to_string();
             Ok(MyDirEntry {
-                file_name: file_name.into(),
+                file_name,
                 permissions: stat.st_mode & 0xFFFF,
                 uid: stat.st_uid,
                 gid: stat.st_gid,

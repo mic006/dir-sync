@@ -206,11 +206,15 @@ impl ActionCtx {
     }
 
     fn delete_file(&self, req: &DeleteEntryReq) -> anyhow::Result<()> {
-        self.fs_tree.remove_file(&req.rel_path)
+        self.fs_tree.remove_file(&req.rel_path)?;
+        self.snap.lock().unwrap().delete_entry(&req.rel_path);
+        Ok(())
     }
 
     fn delete_dir(&self, req: &DeleteEntryReq) -> anyhow::Result<()> {
-        self.fs_tree.remove_dir(&req.rel_path)
+        self.fs_tree.remove_dir(&req.rel_path)?;
+        self.snap.lock().unwrap().delete_entry(&req.rel_path);
+        Ok(())
     }
 
     fn create_update_metadata(&self, req: &UpdateMetadataReq) -> anyhow::Result<()> {
@@ -218,7 +222,7 @@ impl ActionCtx {
         let new = req.metadata.as_ref().unwrap();
         let diff = current.map_or(DiffType::all(), |current| diff::diff_entries(&current, new));
 
-        // IMPORTANT: for a regular file, current does not contains file hash
+        // IMPORTANT: for a regular file, current does not contain file hash
         // so CONTENT bit shall be ignored for regular files
         if diff.contains(DiffType::TYPE) || (diff.contains(DiffType::CONTENT) && !new.is_file()) {
             // create entry as tmp file, set metadata and rename it to final name
@@ -262,6 +266,13 @@ impl ActionCtx {
                     .set_mtime(&req.rel_path, new.mtime.as_ref().unwrap())?;
             }
         }
+
+        // update entry metadata in snap
+        let entry = self.fs_tree.stat(&req.rel_path)?;
+        self.snap
+            .lock()
+            .unwrap()
+            .create_or_update_entry(&req.rel_path, entry)?;
 
         Ok(())
     }
@@ -322,13 +333,26 @@ impl ActionCtx {
                 "create_update_file: inconsistent file size"
             );
             let hash = ongoing_write_file.f.compute_hash()?;
+            let hash = hash.as_bytes().to_vec();
             anyhow::ensure!(
-                hash.as_bytes() == &regular_data.hash[..],
+                hash == regular_data.hash,
                 "create_update_file: inconsistent hash"
             );
 
             // finalize file
             self.finalize_regular_file(ongoing_write_file.f, &req.rel_path, metadata)?;
+
+            // update entry metadata in snap
+            let mut entry = self.fs_tree.stat(&req.rel_path)?;
+            // add hash
+            let Some(Specific::Regular(regular_data)) = &mut entry.specific else {
+                anyhow::bail!("create_update_file: invalid metadata for newly created file");
+            };
+            regular_data.hash = hash;
+            self.snap
+                .lock()
+                .unwrap()
+                .create_or_update_entry(&req.rel_path, entry)?;
         }
 
         Ok(())
@@ -651,11 +675,14 @@ impl Drop for TreeLocal {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::MetadataExt as _;
+
     use crate::config::tests::load_ut_cfg_ctx;
     use crate::generic::file::MyHash;
     use crate::generic::fs::PathExt as _;
     use crate::generic::task_tracker::TaskTrackerMain;
     use crate::proto::TimestampExt as _;
+    use crate::proto::{DirectoryData, RegularData};
 
     use super::*;
 
@@ -753,58 +780,139 @@ mod tests {
         Ok(())
     }
 
+    struct TestSetup {
+        temp_dir: tempfile::TempDir,
+        fs_tree: Arc<FsTree>,
+        sender_req: Sender<Arc<ActionReq>>,
+        receiver_rsp: Receiver<ActionRsp>,
+        snap: Arc<Mutex<MyDirEntry>>,
+        my_uid: u32,
+        my_gid: u32,
+    }
+
+    impl TestSetup {
+        fn new() -> anyhow::Result<Self> {
+            let temp_dir = tempfile::tempdir()?;
+            let temp_path = temp_dir.path().to_str().unwrap();
+            let fs_tree = Arc::new(FsTree::new(temp_path)?);
+
+            let meta = std::fs::metadata(temp_path)?;
+            let my_uid = meta.uid();
+            let my_gid = meta.gid();
+
+            let (sender_req, receiver_req) = flume::bounded(10);
+            let (sender_rsp, receiver_rsp) = flume::bounded(10);
+
+            let snap = Arc::new(Mutex::new(MyDirEntry {
+                file_name: ".".to_string(),
+                specific: Some(Specific::Directory(DirectoryData { content: vec![] })),
+                permissions: 0o755,
+                uid: my_uid,
+                gid: my_gid,
+                mtime: Some(Timestamp::now()),
+            }));
+
+            let mut action_ctx = ActionCtx {
+                fs_tree: fs_tree.clone(),
+                snap: snap.clone(),
+                receiver: receiver_req,
+                sender: sender_rsp,
+                read_buf_size: 1024,
+                ongoing_write_file: None,
+            };
+
+            // Spawn the task
+            tokio::spawn(async move { action_ctx.task().await });
+
+            Ok(Self {
+                temp_dir,
+                fs_tree,
+                sender_req,
+                receiver_rsp,
+                snap,
+                my_uid,
+                my_gid,
+            })
+        }
+
+        async fn end_marker(&self) -> anyhow::Result<()> {
+            self.sender_req
+                .send_async(Arc::new(ActionReq::EndMarker(PROTO_NULL_VALUE)))
+                .await?;
+            let rsp = self.receiver_rsp.recv_async().await?;
+            assert!(matches!(rsp, ActionRsp::EndMarker(_)));
+            Ok(())
+        }
+    }
+
     #[tokio::test]
-    #[allow(clippy::too_many_lines)]
-    async fn test_action_ctx_operations() -> anyhow::Result<()> {
-        use crate::proto::{DirectoryData, RegularData};
-        use std::os::unix::fs::MetadataExt;
+    async fn test_action_create_dir() -> anyhow::Result<()> {
         crate::generic::test::log_init();
-
-        let temp_dir = tempfile::tempdir()?;
-        let temp_path = temp_dir.path().to_str().unwrap();
-        let fs_tree = Arc::new(FsTree::new(temp_path)?);
-
-        let meta = std::fs::metadata(temp_path)?;
-        let my_uid = meta.uid();
-        let my_gid = meta.gid();
-
-        let (sender_req, receiver_req) = flume::bounded(10);
-        let (sender_rsp, receiver_rsp) = flume::bounded(10);
-
-        let mut action_ctx = ActionCtx {
-            fs_tree: fs_tree.clone(),
-            snap: Arc::default(),
-            receiver: receiver_req,
-            sender: sender_rsp,
-            read_buf_size: 1024,
-            ongoing_write_file: None,
-        };
-
-        // Spawn the task
-        tokio::spawn(async move { action_ctx.task().await });
+        let setup = TestSetup::new()?;
 
         // 1. Create directory
         let dir_meta = MyDirEntry {
             file_name: "subdir".to_string(),
             specific: Some(Specific::Directory(DirectoryData { content: vec![] })),
             permissions: 0o755,
-            uid: my_uid,
-            gid: my_gid,
+            uid: setup.my_uid,
+            gid: setup.my_gid,
             mtime: Some(Timestamp {
                 seconds: 1000,
                 nanos: 0,
             }),
         };
-        sender_req
+        setup
+            .sender_req
             .send_async(Arc::new(ActionReq::CreateUpdateMetadata(
                 UpdateMetadataReq {
-                    rel_path: "subdir".to_string(),
+                    rel_path: "./subdir".to_string(),
                     metadata: Some(dir_meta.clone()),
                 },
             )))
             .await?;
+        setup.end_marker().await?;
 
-        // 2. Create file (write content)
+        // Verify on filesystem
+        let stat = setup.fs_tree.stat("./subdir")?;
+        assert!(stat.is_dir());
+
+        // Verify snap
+        let snap = setup.snap.lock().unwrap();
+        let entry = snap.get_entry("./subdir").unwrap();
+        assert_eq!(entry.file_name, "subdir");
+        assert!(entry.is_dir());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_action_create_file() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+        let setup = TestSetup::new()?;
+
+        // Create parent dir first
+        setup
+            .fs_tree
+            .mkdir("./subdir")
+            .expect("Failed to create subdir");
+        setup
+            .snap
+            .lock()
+            .unwrap()
+            .create_or_update_entry(
+                "./subdir",
+                MyDirEntry {
+                    file_name: "subdir".to_string(),
+                    specific: Some(Specific::Directory(DirectoryData { content: vec![] })),
+                    permissions: 0o755,
+                    uid: setup.my_uid,
+                    gid: setup.my_gid,
+                    mtime: Some(Timestamp::now()),
+                },
+            )
+            .unwrap();
+
         let file_content = b"Hello World";
         let file_hash = blake3::hash(file_content).as_bytes().to_vec();
         let file_meta = MyDirEntry {
@@ -814,8 +922,8 @@ mod tests {
                 hash: file_hash.clone(),
             })),
             permissions: 0o644,
-            uid: my_uid,
-            gid: my_gid,
+            uid: setup.my_uid,
+            gid: setup.my_gid,
             mtime: Some(Timestamp {
                 seconds: 2000,
                 nanos: 0,
@@ -823,9 +931,10 @@ mod tests {
         };
 
         // Send first chunk (creation)
-        sender_req
+        setup
+            .sender_req
             .send_async(Arc::new(ActionReq::CreateUpdateFile(FileWriteReq {
-                rel_path: "subdir/file.txt".to_string(),
+                rel_path: "./subdir/file.txt".to_string(),
                 offset: 0,
                 data: file_content[..5].to_vec(),
                 size: Some(file_content.len() as u64),
@@ -834,127 +943,233 @@ mod tests {
             .await?;
 
         // Send second chunk (append + finalize)
-        sender_req
+        setup
+            .sender_req
             .send_async(Arc::new(ActionReq::CreateUpdateFile(FileWriteReq {
-                rel_path: "subdir/file.txt".to_string(),
+                rel_path: "./subdir/file.txt".to_string(),
                 offset: 5,
                 data: file_content[5..].to_vec(),
                 size: None,
                 metadata: Some(file_meta.clone()),
             })))
             .await?;
+        setup.end_marker().await?;
 
-        // 3. Read file
-        sender_req
+        // Verify on filesystem
+        let stat = setup.fs_tree.stat("./subdir/file.txt")?;
+        assert!(stat.is_file());
+        let f = setup.fs_tree.open("./subdir/file.txt")?;
+        assert_eq!(f.file_size()?, file_content.len() as u64);
+
+        // Verify snap
+        let snap = setup.snap.lock().unwrap();
+        let entry = snap.get_entry("./subdir/file.txt").unwrap();
+        assert_eq!(entry.file_name, "file.txt");
+        assert!(entry.is_file());
+        if let Some(Specific::Regular(data)) = &entry.specific {
+            assert_eq!(data.size, file_content.len() as u64);
+            assert_eq!(data.hash, file_hash);
+        } else {
+            panic!("Expected regular file");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_action_read_file() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+        let setup = TestSetup::new()?;
+        let file_content = b"read me";
+        std::fs::write(setup.temp_dir.path().join("file.txt"), file_content)?;
+
+        setup
+            .sender_req
             .send_async(Arc::new(ActionReq::ReadFile(FileReadReq {
-                rel_path: "subdir/file.txt".to_string(),
+                rel_path: "./file.txt".to_string(),
             })))
             .await?;
 
-        // Check read response
-        let rsp = receiver_rsp.recv_async().await?;
+        let rsp = setup.receiver_rsp.recv_async().await?;
         if let ActionRsp::FileData(read_rsp) = rsp {
-            assert_eq!(read_rsp.rel_path, "subdir/file.txt");
+            assert_eq!(read_rsp.rel_path, "./file.txt");
             assert_eq!(read_rsp.offset, 0);
-            assert_eq!(read_rsp.data, file_content[..]);
+            assert_eq!(read_rsp.data, file_content);
         } else {
             panic!("Expected FileData response, got {rsp:?}");
         }
 
-        // 4. Update metadata (chmod)
-        let mut new_file_meta = file_meta.clone();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_action_update_metadata() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+        let setup = TestSetup::new()?;
+        let file_path = setup.temp_dir.path().join("file.txt");
+        std::fs::write(&file_path, "content")?;
+        let file_meta = setup.fs_tree.stat("./file.txt")?;
+        setup
+            .snap
+            .lock()
+            .unwrap()
+            .create_or_update_entry("./file.txt", file_meta)
+            .unwrap();
+
+        let mut new_file_meta = setup.fs_tree.stat("./file.txt")?;
         new_file_meta.permissions = 0o600;
-        sender_req
+        setup
+            .sender_req
             .send_async(Arc::new(ActionReq::CreateUpdateMetadata(
                 UpdateMetadataReq {
-                    rel_path: "subdir/file.txt".to_string(),
+                    rel_path: "./file.txt".to_string(),
                     metadata: Some(new_file_meta),
                 },
             )))
             .await?;
+        setup.end_marker().await?;
 
-        // Sync
-        sender_req
-            .send_async(Arc::new(ActionReq::EndMarker(PROTO_NULL_VALUE)))
-            .await?;
-        let rsp = receiver_rsp.recv_async().await?;
-        println!("{rsp:?}");
-        assert!(matches!(rsp, ActionRsp::EndMarker(_)));
-
-        // Verify permissions
-        let stat = fs_tree.stat("subdir/file.txt")?;
+        // Verify on filesystem
+        let stat = setup.fs_tree.stat("./file.txt")?;
         assert_eq!(stat.permissions & 0o777, 0o600);
 
-        // 5. Delete file
-        sender_req
+        // Verify snap
+        let snap = setup.snap.lock().unwrap();
+        let entry = snap.get_entry("./file.txt").unwrap();
+        assert_eq!(entry.permissions & 0o777, 0o600);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_action_delete_file() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+        let setup = TestSetup::new()?;
+        let file_path = setup.temp_dir.path().join("file.txt");
+        std::fs::write(&file_path, "content")?;
+        let file_meta = setup.fs_tree.stat("./file.txt")?;
+        setup
+            .snap
+            .lock()
+            .unwrap()
+            .create_or_update_entry("./file.txt", file_meta)
+            .unwrap();
+
+        setup
+            .sender_req
             .send_async(Arc::new(ActionReq::DeleteFile(DeleteEntryReq {
-                rel_path: "subdir/file.txt".to_string(),
+                rel_path: "./file.txt".to_string(),
             })))
             .await?;
+        setup.end_marker().await?;
 
-        // 6. Delete dir
-        sender_req
+        // Verify on filesystem
+        assert!(!file_path.exists());
+
+        // Verify snap
+        let snap = setup.snap.lock().unwrap();
+        assert!(snap.get_entry("./file.txt").is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_action_delete_dir() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+        let setup = TestSetup::new()?;
+        let dir_path = setup.temp_dir.path().join("subdir");
+        std::fs::create_dir(&dir_path)?;
+        let dir_meta = setup.fs_tree.stat("./subdir")?;
+        setup
+            .snap
+            .lock()
+            .unwrap()
+            .create_or_update_entry("./subdir", dir_meta)
+            .unwrap();
+
+        setup
+            .sender_req
             .send_async(Arc::new(ActionReq::DeleteDir(DeleteEntryReq {
-                rel_path: "subdir".to_string(),
+                rel_path: "./subdir".to_string(),
             })))
             .await?;
+        setup.end_marker().await?;
 
-        // Sync again
-        sender_req
-            .send_async(Arc::new(ActionReq::EndMarker(PROTO_NULL_VALUE)))
-            .await?;
-        let rsp = receiver_rsp.recv_async().await?;
-        assert!(matches!(rsp, ActionRsp::EndMarker(_)));
+        // Verify on filesystem
+        assert!(!dir_path.exists());
 
-        assert!(!temp_dir.path().join("subdir").exists());
+        // Verify snap
+        let snap = setup.snap.lock().unwrap();
+        assert!(snap.get_entry("./subdir").is_none());
 
-        // 7. Create Symlink
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_action_create_symlink() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+        let setup = TestSetup::new()?;
+
         let link_meta = MyDirEntry {
             file_name: "mylink".to_string(),
             specific: Some(Specific::Symlink("target".to_string())),
             permissions: 0o777,
-            uid: my_uid,
-            gid: my_gid,
+            uid: setup.my_uid,
+            gid: setup.my_gid,
             mtime: Some(Timestamp {
                 seconds: 3000,
                 nanos: 0,
             }),
         };
-        sender_req
+        setup
+            .sender_req
             .send_async(Arc::new(ActionReq::CreateUpdateMetadata(
                 UpdateMetadataReq {
-                    rel_path: "mylink".to_string(),
+                    rel_path: "./mylink".to_string(),
                     metadata: Some(link_meta.clone()),
                 },
             )))
             .await?;
+        setup.end_marker().await?;
 
-        // Sync
-        sender_req
-            .send_async(Arc::new(ActionReq::EndMarker(PROTO_NULL_VALUE)))
-            .await?;
-        let rsp = receiver_rsp.recv_async().await?;
-        println!("{rsp:?}");
-        assert!(matches!(rsp, ActionRsp::EndMarker(_)));
-
-        let stat = fs_tree.stat("mylink")?;
+        // Verify on filesystem
+        let stat = setup.fs_tree.stat("./mylink")?;
         if let Some(Specific::Symlink(target)) = stat.specific {
             assert_eq!(target, "target");
         } else {
             panic!("Expected symlink");
         }
 
-        // 8. Error handling
-        sender_req
+        // Verify snap
+        let snap = setup.snap.lock().unwrap();
+        let entry = snap.get_entry("./mylink").unwrap();
+        assert!(entry.is_symlink());
+        if let Some(Specific::Symlink(target)) = &entry.specific {
+            assert_eq!(target, "target");
+        } else {
+            panic!("Expected symlink in snap");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_action_error_handling() -> anyhow::Result<()> {
+        crate::generic::test::log_init();
+        let setup = TestSetup::new()?;
+
+        setup
+            .sender_req
             .send_async(Arc::new(ActionReq::ReadFile(FileReadReq {
-                rel_path: "non_existent".to_string(),
+                rel_path: "./non_existent".to_string(),
             })))
             .await?;
-        let rsp = receiver_rsp.recv_async().await?;
+
+        let rsp = setup.receiver_rsp.recv_async().await?;
         if let ActionRsp::Error(err) = rsp {
-            assert_eq!(err.rel_path, "non_existent");
+            assert_eq!(err.rel_path, "./non_existent");
         } else {
-            panic!("Expected Error response");
+            panic!("Expected Error response, got {rsp:?}");
         }
 
         Ok(())
