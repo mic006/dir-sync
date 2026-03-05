@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use flume::{Receiver, Sender};
 use prost_types::Timestamp;
@@ -511,7 +511,7 @@ impl TreeLocal {
         prev_snap: Option<MyDirEntry>,
         sync_fqns: Arc<Vec<String>>, // other paths to perform synchronization with
         snap_access: SnapAccess,
-        sender_snap: Sender<Box<TreeWalkOutput>>,
+        sender_snap: Sender<TreeWalkOutput>,
     ) -> anyhow::Result<TaskExit> {
         log::info!("tree[{fs_tree}]: starting walk");
 
@@ -542,10 +542,10 @@ impl TreeLocal {
             })
             .flatten();
 
-        sender_snap.send(Box::new(TreeWalkOutput {
-            snap,
+        sender_snap.send(TreeWalkOutput {
+            snap: Arc::new(Mutex::new(snap)),
             prev_sync_snap,
-        }))?;
+        })?;
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 }
@@ -560,11 +560,11 @@ impl Tree for TreeLocal {
         Ok(())
     }
 
-    fn get_root_entry(&self) -> anyhow::Result<&MyDirEntry> {
+    fn get_root_entry(&self) -> anyhow::Result<MutexGuard<'_, MyDirEntry>> {
         let TreeMetadataState::Received(output) = &self.metadata_state else {
             anyhow::bail!("inconsistent state, call wait_for_tree() first");
         };
-        Ok(&output.snap)
+        Ok(output.snap.lock().unwrap())
     }
 
     fn get_fs_action_requester(&self) -> ActionReqSender {
@@ -593,7 +593,7 @@ impl Tree for TreeLocal {
                 ts: Some(self.ts),
                 path: self.path.clone(),
                 last_syncs,
-                root: Some(output.snap),
+                root: Some(std::mem::take(&mut output.snap.lock().unwrap())),
             };
             let synced_remotes = if sync {
                 self.sync_fqns
@@ -678,50 +678,53 @@ mod tests {
 
         tree.wait_for_tree().await?;
 
-        let root_entry = tree.get_root_entry()?;
         {
-            let root_content = root_entry.get_dir_content(".");
-            //println!("{root_content:#?}");
-            assert_eq!(root_content.len(), 6);
-            let file_names: Vec<_> = root_content.iter().map(|e| e.file_name.as_str()).collect();
-            assert_eq!(
-                file_names,
-                vec![
-                    "empty file",
-                    "empty_folder",
-                    "some file",
-                    "some_link",
-                    "sub folder 2 €",
-                    "sub_folder1"
-                ]
-            );
-        }
-        {
-            let sub_content = root_entry.get_dir_content("./sub folder 2 €");
-            //println!("{sub_content:#?}");
-            assert_eq!(sub_content.len(), 1);
-            assert_eq!(sub_content[0].file_name, "beta");
-        }
-        {
-            let entry = root_entry.get_entry("./sub folder 2 €/beta").unwrap();
-            assert_eq!(entry.file_name, "beta");
-            let Some(Specific::Regular(file_data)) = &entry.specific else {
-                panic!("beta file error");
-            };
-            assert_eq!(file_data.size, 9);
-            assert_eq!(
-                MyHash::from_slice(&file_data.hash)?,
-                MyHash::from_hex(
-                    "b224a1da2bf5e72b337dc6dde457a05265a06dec8875be379e2ad2be5edb3bf2"
-                )?
-            );
-        }
-        {
-            let entry = root_entry.get_entry("./some_link").unwrap();
-            let Some(Specific::Symlink(symlink_data)) = &entry.specific else {
-                panic!("some_link error");
-            };
-            assert_eq!(symlink_data, "target");
+            let root_entry = tree.get_root_entry()?;
+            {
+                let root_content = root_entry.get_dir_content(".");
+                //println!("{root_content:#?}");
+                assert_eq!(root_content.len(), 6);
+                let file_names: Vec<_> =
+                    root_content.iter().map(|e| e.file_name.as_str()).collect();
+                assert_eq!(
+                    file_names,
+                    vec![
+                        "empty file",
+                        "empty_folder",
+                        "some file",
+                        "some_link",
+                        "sub folder 2 €",
+                        "sub_folder1"
+                    ]
+                );
+            }
+            {
+                let sub_content = root_entry.get_dir_content("./sub folder 2 €");
+                //println!("{sub_content:#?}");
+                assert_eq!(sub_content.len(), 1);
+                assert_eq!(sub_content[0].file_name, "beta");
+            }
+            {
+                let entry = root_entry.get_entry("./sub folder 2 €/beta").unwrap();
+                assert_eq!(entry.file_name, "beta");
+                let Some(Specific::Regular(file_data)) = &entry.specific else {
+                    panic!("beta file error");
+                };
+                assert_eq!(file_data.size, 9);
+                assert_eq!(
+                    MyHash::from_slice(&file_data.hash)?,
+                    MyHash::from_hex(
+                        "b224a1da2bf5e72b337dc6dde457a05265a06dec8875be379e2ad2be5edb3bf2"
+                    )?
+                );
+            }
+            {
+                let entry = root_entry.get_entry("./some_link").unwrap();
+                let Some(Specific::Symlink(symlink_data)) = &entry.specific else {
+                    panic!("some_link error");
+                };
+                assert_eq!(symlink_data, "target");
+            }
         }
 
         task_tracker_main.request_stop();

@@ -362,6 +362,8 @@ impl<'a> SyncExecCtx<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::MutexGuard;
+
     use super::*;
     use crate::generic::task_tracker::TaskTrackerMain;
     use crate::proto::RegularData;
@@ -398,7 +400,7 @@ mod tests {
             Ok(())
         }
 
-        fn get_root_entry(&self) -> anyhow::Result<&MyDirEntry> {
+        fn get_root_entry(&self) -> anyhow::Result<MutexGuard<'_, MyDirEntry>> {
             unreachable!("mock");
         }
 

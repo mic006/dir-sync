@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard};
 
 use clap::Parser as _;
 use prost_types::Timestamp;
@@ -264,8 +264,10 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
     }
 
     // perform diff
-    let root_entries = ctx.get_root_entries()?;
-    let diffs = crate::diff::diff_trees(task_tracker, &root_entries, mode);
+    let diffs = {
+        let root_entries = ctx.get_root_entries()?;
+        crate::diff::diff_trees(task_tracker, &root_entries.as_ref(), mode)
+    };
     ctx.save_snaps_and_terminate(false).await;
     let diffs = diffs?;
 
@@ -303,8 +305,14 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
     }
 
     // perform diff
-    let root_entries = ctx.get_root_entries()?;
-    let mut diffs = crate::diff::diff_trees(task_tracker.clone(), &root_entries, DiffMode::Output)?;
+    let mut diffs = {
+        let root_entries = ctx.get_root_entries()?;
+        crate::diff::diff_trees(
+            task_tracker.clone(),
+            &root_entries.as_ref(),
+            DiffMode::Output,
+        )?
+    };
 
     // get prev_snaps from all trees
     let prev_sync_snaps = ctx.get_prev_sync_snaps();
@@ -461,8 +469,13 @@ impl RunContext {
         )
     }
 
-    fn get_root_entries(&self) -> anyhow::Result<Vec<&MyDirEntry>> {
-        self.trees.iter().map(|t| t.get_root_entry()).collect()
+    fn get_root_entries(&self) -> anyhow::Result<RootEntries<'_>> {
+        let mutex_root_entries = self
+            .trees
+            .iter()
+            .map(|t| t.get_root_entry())
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(RootEntries { mutex_root_entries })
     }
 
     async fn save_snaps_and_terminate(&mut self, sync: bool) {
@@ -472,6 +485,20 @@ impl RunContext {
         for tree in &mut self.trees {
             tree.terminate().await;
         }
+    }
+}
+
+/// Context owning guard to root entry of each tree
+struct RootEntries<'a> {
+    /// Mutex guards of the root entries
+    mutex_root_entries: Vec<MutexGuard<'a, MyDirEntry>>,
+}
+impl RootEntries<'_> {
+    fn as_ref(&self) -> Vec<&MyDirEntry> {
+        self.mutex_root_entries
+            .iter()
+            .map(std::ops::Deref::deref)
+            .collect()
     }
 }
 

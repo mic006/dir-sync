@@ -4,7 +4,7 @@
 //! and control this instance
 
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
@@ -201,7 +201,7 @@ impl TreeRemote {
     async fn stdout_task<S: AsyncReadExt + Unpin>(
         fqn: String,
         mut remote_out: ProstRead<S>,
-        sender_snap: flume::Sender<Box<TreeWalkOutput>>,
+        sender_snap: flume::Sender<TreeWalkOutput>,
         sender_act_rsp: flume::Sender<ActionRsp>,
         sender_response: flume::Sender<RemoteEvent>,
     ) -> anyhow::Result<TaskExit> {
@@ -212,10 +212,10 @@ impl TreeRemote {
                 }
                 Some(RemoteRsp::WalkOutput(output)) => {
                     log::debug!("tree_remote[{fqn}]: walkoutput received");
-                    sender_snap.send(Box::new(TreeWalkOutput {
-                        snap: output.snap.unwrap(),
+                    sender_snap.send(TreeWalkOutput {
+                        snap: Arc::new(Mutex::new(output.snap.unwrap())),
                         prev_sync_snap: output.prev_sync_snap,
-                    }))?;
+                    })?;
                 }
                 Some(RemoteRsp::ActionRsp(action_rsp)) => {
                     sender_act_rsp.send(action_rsp.rsp.unwrap())?;
@@ -254,11 +254,11 @@ impl Tree for TreeRemote {
         Ok(())
     }
 
-    fn get_root_entry(&self) -> anyhow::Result<&MyDirEntry> {
+    fn get_root_entry(&self) -> anyhow::Result<MutexGuard<'_, MyDirEntry>> {
         let TreeMetadataState::Received(output) = &self.metadata_state else {
             anyhow::bail!("inconsistent state, call wait_for_tree() first");
         };
-        Ok(&output.snap)
+        Ok(output.snap.lock().unwrap())
     }
 
     fn get_fs_action_requester(&self) -> ActionReqSender {

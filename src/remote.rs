@@ -59,10 +59,11 @@ pub async fn remote_main(task_tracker: TaskTracker) -> TrackedTaskResult {
     }
 
     // 5. report tree walk completion
+    let snap = (*tree.get_root_entry()?).clone();
     remote_out
         .send(&Response {
             rsp: Some(RemoteRsp::WalkOutput(WalkOutput {
-                snap: Some(tree.get_root_entry()?.clone()),
+                snap: Some(snap),
                 prev_sync_snap: tree.take_prev_sync_snap(),
             })),
         })

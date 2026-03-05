@@ -1,6 +1,6 @@
 //! Generic interface for one input of `dir-sync`
 
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use flume::{Receiver, Sender};
 use regex::Regex;
@@ -21,7 +21,7 @@ pub trait Tree {
     ///
     /// # Errors
     /// * no root entry available (need to call `wait_for_tree()` first)
-    fn get_root_entry(&self) -> anyhow::Result<&MyDirEntry>;
+    fn get_root_entry(&self) -> anyhow::Result<MutexGuard<'_, MyDirEntry>>;
 
     /// Get sender to send FS action requests
     fn get_fs_action_requester(&self) -> ActionReqSender;
@@ -80,9 +80,9 @@ impl TreePath {
 /// State for metadata
 pub enum TreeMetadataState {
     /// Walking of the directory is on-going, handler to get the result
-    Processing(Receiver<Box<TreeWalkOutput>>),
+    Processing(Receiver<TreeWalkOutput>),
     /// Result is already available
-    Received(Box<TreeWalkOutput>),
+    Received(TreeWalkOutput),
     /// Result has been consumed
     Terminated,
 }
@@ -90,7 +90,7 @@ pub enum TreeMetadataState {
 /// Output of the walk task
 pub struct TreeWalkOutput {
     /// Metadata snapshot of the tree
-    pub snap: MyDirEntry,
+    pub snap: Arc<Mutex<MyDirEntry>>,
     /// Previous sync snapshot for the tree, if any
     pub prev_sync_snap: Option<MetadataSnap>,
 }
