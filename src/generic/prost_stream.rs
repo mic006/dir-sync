@@ -142,6 +142,8 @@ where
 
     /// Send a Prost message to the stream
     ///
+    /// Note: stream is flushed after write.
+    ///
     /// # Errors
     /// - Serialization error
     /// - IO error
@@ -154,6 +156,7 @@ where
         self.buf.reserve(msg_size);
         msg.encode_length_delimited(&mut self.buf)?;
         self.stream.write_all(&self.buf).await?;
+        self.stream.flush().await?;
         Ok(())
     }
 }

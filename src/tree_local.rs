@@ -166,31 +166,51 @@ impl ActionCtx {
         while let Ok(req) = self.receiver.recv_async().await {
             let res = match &*req {
                 ActionReq::EndMarker(_) => {
+                    log::debug!("tree[{}]: action EndMarker", self.fs_tree);
                     self.sender
                         .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
                         .await?;
                     Ok(())
                 }
                 ActionReq::DeleteFile(req) => {
+                    log::debug!(
+                        "tree[{}]: action DeleteFile({})",
+                        self.fs_tree,
+                        req.rel_path
+                    );
                     self.delete_file(req).map_err(|err| (&req.rel_path, err))
                 }
                 ActionReq::DeleteDir(req) => {
+                    log::debug!("tree[{}]: action DeleteDir({})", self.fs_tree, req.rel_path);
                     self.delete_dir(req).map_err(|err| (&req.rel_path, err))
                 }
-                ActionReq::CreateUpdateMetadata(req) => self
-                    .create_update_metadata(req)
-                    .map_err(|err| (&req.rel_path, err)),
+                ActionReq::CreateUpdateMetadata(req) => {
+                    log::debug!(
+                        "tree[{}]: action CreateUpdateMetadata({})",
+                        self.fs_tree,
+                        req.rel_path
+                    );
+                    self.create_update_metadata(req)
+                        .map_err(|err| (&req.rel_path, err))
+                }
                 ActionReq::CreateUpdateFile(req) => {
+                    log::debug!(
+                        "tree[{}]: action CreateUpdateFile({})",
+                        self.fs_tree,
+                        req.rel_path
+                    );
                     self.create_update_file(req).await.map_err(|err| {
                         // for any error, drop the ongoing file
                         self.ongoing_write_file = None;
                         (&req.rel_path, err)
                     })
                 }
-                ActionReq::ReadFile(req) => self
-                    .read_file(req)
-                    .await
-                    .map_err(|err| (&req.rel_path, err)),
+                ActionReq::ReadFile(req) => {
+                    log::debug!("tree[{}]: action ReadFile({})", self.fs_tree, req.rel_path);
+                    self.read_file(req)
+                        .await
+                        .map_err(|err| (&req.rel_path, err))
+                }
             };
             if let Err((rel_path, err)) = res {
                 self.sender

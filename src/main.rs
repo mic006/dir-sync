@@ -503,7 +503,7 @@ impl RootEntries<'_> {
 }
 
 fn canonicalize(p: &str) -> anyhow::Result<String> {
-    let p = std::fs::canonicalize(p)?;
+    let p = std::fs::canonicalize(p).map_err(|err| anyhow::anyhow!("invalid path {p}: {err}"))?;
     Ok(p.checked_as_str()?.to_owned())
 }
 

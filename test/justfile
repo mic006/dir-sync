@@ -13,7 +13,7 @@ test_dir := "/tmp/autoclean/dir-sync-test"
     for d in a b c; do mkdir {{test_dir}}/$d; tar -xaf basic_tree.tar.zst -C {{test_dir}}/$d; done
 
 # perform some modifications in the different folders
-@modif:
+@modify:
     touch {{test_dir}}/a/file_empty_new
     echo new > {{test_dir}}/b/file_content_new
     echo beta > {{test_dir}}/b/file_content.txt
@@ -35,3 +35,11 @@ test_dir := "/tmp/autoclean/dir-sync-test"
 # run sync operation, local access
 @sync_local:
     {{ds}} -L stderr -d -b {{test_dir}}/a {{test_dir}}/b {{test_dir}}/c
+
+# run diff operation, remote access
+@diff_remote:
+    {{ds}} -L stderr -d -o {{test_dir}}/a localhost:{{test_dir}}/b localhost:{{test_dir}}/c
+
+# run sync operation, remote access
+@sync_remote:
+    {{ds}} -L stderr -d -b {{test_dir}}/a localhost:{{test_dir}}/b localhost:{{test_dir}}/c

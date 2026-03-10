@@ -66,15 +66,20 @@ impl TreeRemote {
         let fqn = tp.fqn.clone();
         // 1. spawn instance
         log::info!("tree_remote[{fqn}]: spawning child process over ssh");
+        // use same path as the one used on local machine
+        // TODO: make it configurable ?
+        let dir_sync_path = std::env::args()
+            .next()
+            .unwrap_or_else(|| "dir-sync".to_string());
         let mut cmd = Command::new("ssh");
         cmd.arg(&tp.hostname)
-            .args(["-e", "none", "dir-sync", "--remote"])
+            .args(["-e", "none", &dir_sync_path, "--remote"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         if log {
-            cmd.args(["--log", "stderr"]);
+            cmd.args(["--log", "stderr", "--debug"]);
         }
         let mut child = cmd.spawn()?;
 
@@ -82,8 +87,18 @@ impl TreeRemote {
         let mut remote_out = ProstRead::new(child.stdout.take().unwrap());
         let remote_err = child.stderr.take().unwrap();
 
+        task_tracker.spawn({
+            let fqn = fqn.clone();
+            async move { Self::stderr_task(fqn, remote_err).await }
+        })?;
+
         // 2. check protocol version
-        let remote_version = remote_out.recv::<Response>().await?;
+        let remote_version = remote_out.recv::<Response>().await.map_err(|err| {
+            anyhow::anyhow!(
+                "tree_remote[{fqn}]: failure when spawning dir-sync process via SSH on {}: {err}",
+                tp.hostname
+            )
+        })?;
         let Some(RemoteRsp::Version(version)) = remote_version.rsp else {
             anyhow::bail!("internal error: expecting RemoteRsp::Version");
         };
@@ -112,10 +127,6 @@ impl TreeRemote {
                 )
                 .await
             }
-        })?;
-        task_tracker.spawn({
-            let fqn = fqn.clone();
-            async move { Self::stderr_task(fqn, remote_err).await }
         })?;
 
         // 4. send configuration
@@ -212,17 +223,19 @@ impl TreeRemote {
                 }
                 Some(RemoteRsp::WalkOutput(output)) => {
                     log::debug!("tree_remote[{fqn}]: walkoutput received");
-                    sender_snap.send(TreeWalkOutput {
-                        snap: Arc::new(Mutex::new(output.snap.unwrap())),
-                        prev_sync_snap: output.prev_sync_snap,
-                    })?;
+                    sender_snap
+                        .send_async(TreeWalkOutput {
+                            snap: Arc::new(Mutex::new(output.snap.unwrap())),
+                            prev_sync_snap: output.prev_sync_snap,
+                        })
+                        .await?;
                 }
                 Some(RemoteRsp::ActionRsp(action_rsp)) => {
-                    sender_act_rsp.send(action_rsp.rsp.unwrap())?;
+                    sender_act_rsp.send_async(action_rsp.rsp.unwrap()).await?;
                 }
                 Some(RemoteRsp::SnapSaved(_)) => {
                     log::debug!("tree_remote[{fqn}]: snap saved");
-                    sender_response.send(RemoteEvent::SnapSaved)?;
+                    sender_response.send_async(RemoteEvent::SnapSaved).await?;
                 }
                 None => {
                     anyhow::bail!("internal error: missing RemoteRsp");

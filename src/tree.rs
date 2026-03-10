@@ -57,8 +57,8 @@ impl TreePath {
         static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+):(.+)$").unwrap());
 
         if let Some(captures) = RE.captures(arg_path) {
-            let hostname = &captures[0];
-            let path = &captures[1];
+            let hostname = &captures[1];
+            let path = &captures[2];
             let fqn = format!("{hostname}:{path}");
             Self {
                 path: path.to_string(),
