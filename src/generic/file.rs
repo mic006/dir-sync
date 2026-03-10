@@ -278,12 +278,14 @@ impl FsTree {
             );
 
             // reserve data space
-            let res = libc::fallocate(fd, 0, 0, size.cast_signed());
-            anyhow::ensure!(
-                res == 0,
-                "FsTree::create_tmp({rel_parent}) allocation failed: {}",
-                std::io::Error::last_os_error()
-            );
+            if size > 0 {
+                let res = libc::fallocate(fd, 0, 0, size.cast_signed());
+                anyhow::ensure!(
+                    res == 0,
+                    "FsTree::create_tmp({rel_parent}) allocation failed: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
 
             Ok(FsFile { fd })
         }

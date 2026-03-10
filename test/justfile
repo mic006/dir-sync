@@ -1,0 +1,37 @@
+# helper for integration tests
+
+ds := x"$rb/debug/dir-sync"
+test_dir := "/tmp/autoclean/dir-sync-test"
+
+@_default:
+  just --list --unsorted
+
+# setup test directory
+@init:
+    rm -rf {{test_dir}}
+    mkdir -p {{test_dir}}
+    for d in a b c; do mkdir {{test_dir}}/$d; tar -xaf basic_tree.tar.zst -C {{test_dir}}/$d; done
+
+# perform some modifications in the different folders
+@modif:
+    touch {{test_dir}}/a/file_empty_new
+    echo new > {{test_dir}}/b/file_content_new
+    echo beta > {{test_dir}}/b/file_content.txt
+    echo modif_a > {{test_dir}}/a/file_conflict.txt
+    echo modif_c > {{test_dir}}/c/file_conflict.txt
+    rm {{test_dir}}/c/file_empty
+    chown mic006:users {{test_dir}}/a/file_owner
+    chmod o+r {{test_dir}}/b/file_perm
+    chown --no-dereference mic006:users {{test_dir}}/c/link_owner
+    ln -sf modif_a {{test_dir}}/a/link_conflict
+    ln -sf modif_b {{test_dir}}/b/link_conflict
+    ln -sf file_conflict.txt {{test_dir}}/c/link_valid
+    rmdir {{test_dir}}/a/dir/subdir_empty
+
+# run diff operation, local access
+@diff_local:
+    {{ds}} -L stderr -d -o {{test_dir}}/a {{test_dir}}/b {{test_dir}}/c
+
+# run sync operation, local access
+@sync_local:
+    {{ds}} -L stderr -d -b {{test_dir}}/a {{test_dir}}/b {{test_dir}}/c
