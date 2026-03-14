@@ -22,6 +22,7 @@ use crate::sync_plan::SyncMode;
 use crate::tree::{Tree, TreePath};
 use crate::tree_local::TreeLocal;
 use crate::tree_remote::TreeRemote;
+use crate::tui::async_main_tui;
 
 pub mod config;
 pub mod diff;
@@ -55,6 +56,7 @@ pub mod sync_plan;
 pub mod tree;
 pub mod tree_local;
 pub mod tree_remote;
+pub mod tui;
 
 /// Dir-sync
 ///
@@ -63,7 +65,7 @@ pub mod tree_remote;
 /// It uses a Terminal UI interface, unless a Mode option is provided.
 #[derive(clap::Parser, Debug)]
 #[command(version(env!("BUILD_GIT_VERSION")))]
-struct Arg {
+pub struct Arg {
     #[clap(flatten)]
     mode: Option<Mode>,
     /// Profile used to ignore files
@@ -120,6 +122,7 @@ struct Mode {
 
 impl Arg {
     /// Get run mode
+    #[must_use]
     pub fn run_mode(&self) -> RunMode {
         if let Some(mode) = &self.mode {
             if mode.status {
@@ -144,7 +147,7 @@ impl Arg {
 }
 
 #[derive(PartialEq, Debug)]
-enum RunMode {
+pub enum RunMode {
     /// Terminal UI
     TerminalUI,
     /// Stop on first difference and exit with failure status (script)
@@ -200,9 +203,6 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 
 /// Async main function
 async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process::ExitCode> {
-    let task_tracker_main = TaskTrackerMain::default();
-    task_tracker_main.setup_signal_catching()?;
-
     if let Some(log_file) = &arg.log {
         let mut logger = env_logger::Builder::from_env(
             env_logger::Env::default().default_filter_or(if arg.debug { "debug" } else { "info" }),
@@ -218,36 +218,36 @@ async fn async_main(arg: Arg, run_mode: RunMode) -> anyhow::Result<std::process:
         logger.init();
     }
 
-    match run_mode {
-        RunMode::TerminalUI => todo!(),
-        RunMode::Status => {
-            let task_tracker = task_tracker_main.tracker();
-            task_tracker_main
-                .spawn(async move { diff_main(task_tracker, arg, DiffMode::Status).await })?;
-        }
-        RunMode::Output => {
-            let task_tracker = task_tracker_main.tracker();
-            task_tracker_main
-                .spawn(async move { diff_main(task_tracker, arg, DiffMode::Output).await })?;
-        }
-        RunMode::SyncBatch => {
-            let task_tracker = task_tracker_main.tracker();
-            task_tracker_main.spawn(async move { sync_main(task_tracker, arg).await })?;
-        }
-        RunMode::RefreshMetadataSnap => {
-            let task_tracker = task_tracker_main.tracker();
-            task_tracker_main
-                .spawn(async move { refresh_metadata_snap(task_tracker, arg).await })?;
-        }
-        RunMode::Remote => {
-            let task_tracker = task_tracker_main.tracker();
-            task_tracker_main.spawn(async move { remote::remote_main(task_tracker).await })?;
-        }
-        RunMode::ListMetadataSnap | RunMode::DumpMetadataSnap => unreachable!("handled in main()"),
-    }
+    if run_mode == RunMode::TerminalUI {
+        // TUI manages the task_tracker to restore the terminal on exit
+        async_main_tui(arg).await
+    } else {
+        let task_tracker_main = TaskTrackerMain::default();
+        task_tracker_main.setup_signal_catching()?;
+        let task_tracker = task_tracker_main.tracker();
 
-    // run until completion or error
-    task_tracker_main.wait().await
+        // launch task
+        match run_mode {
+            RunMode::TerminalUI => unreachable!("handled above"),
+            RunMode::Status => {
+                task_tracker_main.spawn(diff_main(task_tracker, arg, DiffMode::Status))?;
+            }
+            RunMode::Output => {
+                task_tracker_main.spawn(diff_main(task_tracker, arg, DiffMode::Output))?;
+            }
+            RunMode::SyncBatch => task_tracker_main.spawn(sync_main(task_tracker, arg))?,
+            RunMode::RefreshMetadataSnap => {
+                task_tracker_main.spawn(refresh_metadata_snap(task_tracker, arg))?;
+            }
+            RunMode::Remote => task_tracker_main.spawn(remote::remote_main(task_tracker))?,
+            RunMode::ListMetadataSnap | RunMode::DumpMetadataSnap => {
+                unreachable!("handled in main()")
+            }
+        }
+
+        // run until completion or error
+        task_tracker_main.wait().await
+    }
 }
 
 async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> TrackedTaskResult {
