@@ -7,6 +7,7 @@ use crate::Arg;
 use crate::generic::task_tracker::{TaskExit, TaskTrackerMain, TrackedTaskResult};
 
 mod render;
+mod rich_text;
 
 /// Terminal UI entry point
 ///
