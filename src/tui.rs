@@ -1,11 +1,15 @@
 //! Entry point for Terminal UI mode
 
-use crossterm::event::{Event, KeyCode, KeyModifiers};
+// allow cast for screen size (u16)
+#![allow(clippy::cast_possible_truncation)]
+
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt as _;
 
 use crate::Arg;
 use crate::generic::task_tracker::{TaskExit, TaskTrackerMain, TrackedTaskResult};
 
+mod help;
 mod render;
 mod rich_text;
 
@@ -24,32 +28,54 @@ pub async fn async_main_tui(arg: Arg) -> anyhow::Result<std::process::ExitCode> 
     result
 }
 
+/// Screen currently displayed
+#[derive(PartialEq, Debug, Clone, Copy)]
+enum Screen {
+    /// Normal screen, diff/sync view
+    Normal,
+    /// Help screen
+    Help,
+    /// Confirm exit without syncing
+    ConfirmExit,
+}
+
 /// Terminal UI application
 struct App {
     /// Indication that application shall run / exit
     running: bool,
+    /// Redraw required on next event loop
+    redraw: bool,
+    /// Current screen displayed
+    screen: Screen,
+    /// Help content, filled on first display of the help screen
+    help: Option<help::Help>,
 }
 
 impl App {
     /// Create the application
     #[allow(clippy::unused_async)]
     async fn new(_arg: Arg) -> anyhow::Result<Self> {
-        Ok(Self { running: true })
+        Ok(Self {
+            running: true,
+            redraw: true,
+            screen: Screen::Normal,
+            help: None,
+        })
     }
 
     /// Execute the application
     async fn task(mut self) -> TrackedTaskResult {
         let mut terminal = ratatui::init();
         let mut terminal_events = crossterm::event::EventStream::new().ready_chunks(16);
-        let mut redraw = true;
 
         // TUI event loop
         while self.running {
-            if redraw {
-                terminal.draw(|frame| frame.render_widget(&self, frame.area()))?;
+            if self.redraw {
+                terminal.draw(|frame| frame.render_widget(&mut self, frame.area()))?;
+                self.redraw = false;
             }
 
-            redraw = tokio::select! {
+            tokio::select! {
                 Some(events) = terminal_events.next() => self.handle_terminal_event(events).await?,
             };
         }
@@ -58,38 +84,76 @@ impl App {
     }
 
     /// Manage terminal events
-    #[allow(clippy::unused_async)]
     async fn handle_terminal_event(
         &mut self,
         events: Vec<Result<Event, std::io::Error>>,
-    ) -> anyhow::Result<bool> {
-        let mut redraw = false;
+    ) -> anyhow::Result<()> {
         for event in events {
             let Ok(event) = event else {
+                // ignore error events
                 continue;
             };
             match event {
                 Event::Key(key_event) => {
-                    match key_event.code {
-                        // quit
-                        KeyCode::Char('q' | 'Q') => self.running = false,
-                        KeyCode::Char('c' | 'C')
-                            if key_event.modifiers == KeyModifiers::CONTROL =>
-                        {
-                            self.running = false;
+                    if (key_event.code == KeyCode::Char('c')
+                        || key_event.code == KeyCode::Char('C'))
+                        && key_event.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        // Ctrl+C is force exit
+                        self.running = false;
+                    } else {
+                        match self.screen {
+                            Screen::Normal => {
+                                self.handle_key_event_screen_normal(key_event).await?;
+                            }
+                            Screen::Help => {
+                                // any key => leave help and return to normal screen
+                                self.set_screen(Screen::Normal);
+                            }
+                            Screen::ConfirmExit => match key_event.code {
+                                KeyCode::Char('y' | 'Y') => {
+                                    // confirm exit without syncing
+                                    self.running = false;
+                                }
+                                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                                    // cancel exit, return to normal screen
+                                    self.set_screen(Screen::Normal);
+                                }
+                                _ => {} // ignored key, user must choose
+                            },
                         }
-                        _ => (), // ignored key
                     }
                 }
-                Event::Resize(_, _) => redraw = true,
+                Event::Resize(_, _) => self.redraw = true,
                 _ => (), // ignored event
             }
 
             if !self.running {
-                // quit, no need to redraw
-                return Ok(false);
+                // quit, no need to process the remaining events
+                break;
             }
         }
-        Ok(redraw)
+        Ok(())
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn handle_key_event_screen_normal(&mut self, key_event: KeyEvent) -> anyhow::Result<()> {
+        match key_event.code {
+            // quit
+            KeyCode::Char('q' | 'Q') | KeyCode::Esc => {
+                self.running = false;
+            }
+            KeyCode::Char('h' | 'H' | '?') | KeyCode::F(1) => {
+                self.set_screen(Screen::Help);
+            }
+            _ => (), // ignored key
+        }
+        Ok(())
+    }
+
+    /// Change screen to be displayed
+    fn set_screen(&mut self, screen: Screen) {
+        self.screen = screen;
+        self.redraw = true;
     }
 }

@@ -3,6 +3,7 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
+use unicode_width::UnicodeWidthStr;
 
 use crate::generic::str_or_string::StrOrString;
 
@@ -43,11 +44,18 @@ impl Effect {
     }
 }
 
+/// One piece of rich text, with its effect
+#[derive(PartialEq, Debug)]
+pub struct RichSpan {
+    pub effect: Effect,
+    pub text: StrOrString,
+}
+
 /// Text with formatting
 #[derive(PartialEq, Debug, Default)]
 pub struct RichText {
-    /// Each element one span of text with its formatting
-    spans: Vec<(Effect, StrOrString)>,
+    /// List of spans = text with its effect
+    pub spans: Vec<RichSpan>,
 }
 
 impl RichText {
@@ -70,7 +78,10 @@ impl RichText {
         for m in RE.find_iter(s) {
             if m.start() > previous {
                 let text = &s[previous..m.start()];
-                spans.push((effect, StrOrString::from_str_to_owned(text)));
+                spans.push(RichSpan {
+                    effect,
+                    text: StrOrString::from_str_to_owned(text),
+                });
             }
             let new_effect = Effect::from_pattern(m.as_str());
             if effect == Effect::None {
@@ -90,7 +101,10 @@ impl RichText {
         }
         if previous < s.len() {
             let text = &s[previous..];
-            spans.push((Effect::None, StrOrString::from_str_to_owned(text)));
+            spans.push(RichSpan {
+                effect: Effect::None,
+                text: StrOrString::from_str_to_owned(text),
+            });
         }
 
         Self { spans }
@@ -99,8 +113,27 @@ impl RichText {
     fn from_error(s: &str, err: &str) -> Self {
         log::error!("{err} in markdown: {s}; returning raw text");
         Self {
-            spans: vec![(Effect::None, StrOrString::from_str_to_owned(s))],
+            spans: vec![RichSpan {
+                effect: Effect::None,
+                text: StrOrString::from_str_to_owned(s),
+            }],
         }
+    }
+}
+
+impl UnicodeWidthStr for RichText {
+    fn width(&self) -> usize {
+        self.spans
+            .iter()
+            .map(|span| span.text.as_str().width())
+            .sum()
+    }
+
+    fn width_cjk(&self) -> usize {
+        self.spans
+            .iter()
+            .map(|span| span.text.as_str().width_cjk())
+            .sum()
     }
 }
 
@@ -115,7 +148,10 @@ mod tests {
         assert_eq!(
             text,
             RichText {
-                spans: vec![(Effect::None, StrOrString::String("Hello world".to_owned()))]
+                spans: vec![RichSpan {
+                    effect: Effect::None,
+                    text: StrOrString::String("Hello world".to_owned())
+                }]
             }
         );
     }
@@ -125,22 +161,31 @@ mod tests {
         let cases = vec![
             (
                 "**bold**",
-                vec![(Effect::Bold, StrOrString::String("bold".to_owned()))],
+                vec![RichSpan {
+                    effect: Effect::Bold,
+                    text: StrOrString::String("bold".to_owned()),
+                }],
             ),
             (
                 "__italic__",
-                vec![(Effect::Italic, StrOrString::String("italic".to_owned()))],
+                vec![RichSpan {
+                    effect: Effect::Italic,
+                    text: StrOrString::String("italic".to_owned()),
+                }],
             ),
             (
                 "`code`",
-                vec![(Effect::Code, StrOrString::String("code".to_owned()))],
+                vec![RichSpan {
+                    effect: Effect::Code,
+                    text: StrOrString::String("code".to_owned()),
+                }],
             ),
             (
                 "==highlight==",
-                vec![(
-                    Effect::Highlight,
-                    StrOrString::String("highlight".to_owned()),
-                )],
+                vec![RichSpan {
+                    effect: Effect::Highlight,
+                    text: StrOrString::String("highlight".to_owned()),
+                }],
             ),
         ];
 
@@ -156,11 +201,26 @@ mod tests {
         assert_eq!(
             text.spans,
             vec![
-                (Effect::None, StrOrString::String("Hello ".to_owned())),
-                (Effect::Bold, StrOrString::String("bold".to_owned())),
-                (Effect::None, StrOrString::String(" and ".to_owned())),
-                (Effect::Italic, StrOrString::String("italic".to_owned())),
-                (Effect::None, StrOrString::String(" world".to_owned())),
+                RichSpan {
+                    effect: Effect::None,
+                    text: StrOrString::String("Hello ".to_owned()),
+                },
+                RichSpan {
+                    effect: Effect::Bold,
+                    text: StrOrString::String("bold".to_owned()),
+                },
+                RichSpan {
+                    effect: Effect::None,
+                    text: StrOrString::String(" and ".to_owned()),
+                },
+                RichSpan {
+                    effect: Effect::Italic,
+                    text: StrOrString::String("italic".to_owned()),
+                },
+                RichSpan {
+                    effect: Effect::None,
+                    text: StrOrString::String(" world".to_owned()),
+                },
             ]
         );
     }
@@ -176,8 +236,14 @@ mod tests {
             rt,
             RichText {
                 spans: vec![
-                    (Effect::None, StrOrString::String("a".to_owned())),
-                    (Effect::None, StrOrString::String("b".to_owned()))
+                    RichSpan {
+                        effect: Effect::None,
+                        text: StrOrString::String("a".to_owned())
+                    },
+                    RichSpan {
+                        effect: Effect::None,
+                        text: StrOrString::String("b".to_owned())
+                    }
                 ]
             }
         );
@@ -189,11 +255,17 @@ mod tests {
         assert_eq!(text.len(), 2);
         assert_eq!(
             text[0].spans,
-            vec![(Effect::None, StrOrString::String("Line 1".to_owned()))]
+            vec![RichSpan {
+                effect: Effect::None,
+                text: StrOrString::String("Line 1".to_owned())
+            }]
         );
         assert_eq!(
             text[1].spans,
-            vec![(Effect::Bold, StrOrString::String("Line 2".to_owned()))]
+            vec![RichSpan {
+                effect: Effect::Bold,
+                text: StrOrString::String("Line 2".to_owned())
+            }]
         );
     }
 
@@ -205,14 +277,20 @@ mod tests {
         let text = RichText::from_markdown_line("**bold");
         assert_eq!(
             text.spans,
-            vec![(Effect::None, StrOrString::String("**bold".to_owned()))]
+            vec![RichSpan {
+                effect: Effect::None,
+                text: StrOrString::String("**bold".to_owned())
+            }]
         );
 
         // Nested / unmatched
         let text = RichText::from_markdown_line("**bo__ld**");
         assert_eq!(
             text.spans,
-            vec![(Effect::None, StrOrString::String("**bo__ld**".to_owned()))]
+            vec![RichSpan {
+                effect: Effect::None,
+                text: StrOrString::String("**bo__ld**".to_owned())
+            }]
         );
     }
 }

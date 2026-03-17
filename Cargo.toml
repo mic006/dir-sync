@@ -27,12 +27,16 @@ log = "0.4.29"
 memmap2 = "0.9.10"
 prost = "0.14.3"
 prost-types = "0.14.3"
-ratatui = { version = "0.30.0", default-features = false, features = ["crossterm", "unstable-widget-ref"] }
+ratatui = { version = "0.30.0", default-features = false, features = [
+    "crossterm",
+    "unstable-widget-ref",
+] }
 rayon = "1.11.0"
 regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9.34"
 tokio = { version = "1.50.0", features = ["full"] }
+unicode-width = { version = "0.2.2", default-features = false }
 zstd = "0.13.3"
 
 [build-dependencies]
