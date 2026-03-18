@@ -3,7 +3,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Clear, Paragraph, Widget},
 };
@@ -58,8 +58,11 @@ impl App {
         // render help area
         Clear.render(help_area, buf);
         let help_block = Block::bordered()
-            .title("Help")
-            .title_bottom(Line::from("Any key to exit help screen").right_aligned());
+            .border_style(&self.theme.help.border_style)
+            .border_type(*self.theme.help.border_type)
+            .style(&self.theme.help.content)
+            .title(" Help ")
+            .title_bottom(Line::from(" Any key to exit help screen ").right_aligned());
         let help_paragraph = Paragraph::new(self.format_help(&help.content)).block(help_block);
         help_paragraph.render(help_area, buf);
     }
@@ -97,8 +100,8 @@ impl App {
             Effect::None => Style::default(),
             Effect::Bold => Style::default().add_modifier(Modifier::BOLD),
             Effect::Italic => Style::default().add_modifier(Modifier::ITALIC),
-            Effect::Code => Style::default().fg(Color::Yellow),
-            Effect::Highlight => Style::default().fg(Color::White),
+            Effect::Code => Style::from(&self.theme.help.content_key_stroke),
+            Effect::Highlight => Style::from(&self.theme.help.content_highlight),
         };
         Span::styled(txt.text.as_str(), style)
     }

@@ -1,17 +1,17 @@
-`dir-sync` is a command line tool to view the differences and synchronize N directories
+==dir-sync== is a command line tool to view the differences and synchronize N directories
 
-`[Q]`, `[Esc]`      Exit the application
-`[Ctrl]+[C]`      Force quit the application
-`[F1]`, `[H]`, `[?]`  Show help; any key to exit the help screen
-`[F5]`            View all differences
-`[F6]`            View unresolved conflicts
-`[F7]`            View resolved conflicts
-`[S]`             Perform synchronization operations and exit
+`[Q]`, `[Esc]`       Quit the application
+`[Ctrl]+[C]`       Force quit the application
+`[F1]`, `[H]`, `[?]`   Show Help; any key to exit the help screen
+`[F5]`             View all differences
+`[F6]`             View unresolved conflicts
+`[F7]`             View resolved conflicts
+`[S]`              Perform Synchronization operations and exit
 
-`[0]`             Clear/reset the synchronization operation; will do nothing
-`[1]` ... `[9]`     Synchronize all directories using N as the source directory
+`[0]`              Clear/reset the synchronization operation; will do nothing
+`[1]` ... `[9]`      Synchronize all directories using N as the source directory
 
-`[Up]`/`[Down]`     Navigate in the differences list by one line
-`[PgUp]`/`[PgDn]`   Navigate in the differences list by one page
-`[Home]`/`[End]`    Navigate in the differences list, top / bottom
-`[Shift]+[Nav]`   Navigate in the details view
+`[Up]` / `[Down]`    Navigate in the differences list by one line
+`[PgUp]` / `[PgDn]`  Navigate in the differences list by one page
+`[Home]` / `[End]`   Navigate in the differences list, top / bottom
+`[Shift]+[Nav]`    Navigate in the details view

@@ -7,7 +7,6 @@
 
 use std::str::FromStr;
 
-use anyhow::anyhow;
 use serde::{Deserialize, de::Error};
 
 #[derive(Default, PartialEq, Debug, Clone)]
@@ -34,7 +33,7 @@ impl<'de> Deserialize<'de> for MemSize {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        MemSize::from_str(&s).map_err(D::Error::custom)
+        Self::from_str(&s).map_err(D::Error::custom)
     }
 }
 
@@ -70,11 +69,11 @@ impl FromStr for MemSize {
                 '0'..='9' => {
                     value = value
                         .checked_mul(10)
-                        .ok_or_else(|| anyhow!("MemSize parsing: overflow"))?;
+                        .ok_or_else(|| anyhow::anyhow!("MemSize parsing: overflow"))?;
 
                     value = value
                         .checked_add(*c as usize - '0' as usize)
-                        .ok_or_else(|| anyhow!("MemSize parsing: overflow"))?;
+                        .ok_or_else(|| anyhow::anyhow!("MemSize parsing: overflow"))?;
                 }
                 ' ' => (),  // ignore spaces
                 _ => break, // stop on any other char
@@ -121,7 +120,7 @@ impl FromStr for MemSize {
         // compute final value
         if si_unit != 0 {
             value = safe_shl(value, 10 * si_unit)
-                .ok_or_else(|| anyhow!("MemSize parsing: overflow"))?;
+                .ok_or_else(|| anyhow::anyhow!("MemSize parsing: overflow"))?;
         }
 
         Ok(Self(value))

@@ -9,9 +9,12 @@ use futures::StreamExt as _;
 use crate::Arg;
 use crate::generic::task_tracker::{TaskExit, TaskTrackerMain, TrackedTaskResult};
 
+use theme::AppTheme;
+
 mod help;
 mod render;
 mod rich_text;
+mod theme;
 
 /// Terminal UI entry point
 ///
@@ -41,6 +44,8 @@ enum Screen {
 
 /// Terminal UI application
 struct App {
+    /// Terminal UI theme
+    theme: AppTheme,
     /// Indication that application shall run / exit
     running: bool,
     /// Redraw required on next event loop
@@ -55,7 +60,9 @@ impl App {
     /// Create the application
     #[allow(clippy::unused_async)]
     async fn new(_arg: Arg) -> anyhow::Result<Self> {
+        let theme = AppTheme::load(None)?;
         Ok(Self {
+            theme,
             running: true,
             redraw: true,
             screen: Screen::Normal,

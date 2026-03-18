@@ -364,7 +364,7 @@ async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTa
 /// Runtime context
 struct RunContext {
     /// Configuration
-    config: ConfigRef,
+    pub config: ConfigRef,
     /// Log enabled ?
     log: bool,
     /// Timestamp of the snapshot

@@ -1,0 +1,18 @@
+# Terminal UI theme
+
+# default theme, using shades of blue
+
+help:
+    border_style:
+        fg: "#FF8D41" # md.ref.palette.orange70
+        bg: "#000000"
+    border_type: rounded
+    content:
+        fg: "#ABABAB" # md.ref.palette.grey70
+        bg: "#000000"
+    content_key_stroke:
+        fg: "#FFE07C" # md.ref.palette.yellow90
+        bg: "#000000"
+    content_highlight:
+        fg: "#FFFFFF"
+        bg: "#000000"

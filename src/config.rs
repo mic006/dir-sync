@@ -34,6 +34,9 @@ pub struct Config {
 
     /// Name of default profile, when profile is not specified on the command line
     default_profile: Option<String>,
+
+    /// Theme file for Terminal UI rendering
+    pub theme: Option<PathBuf>,
 }
 
 impl Config {
@@ -316,6 +319,7 @@ pub mod tests {
                 ),
             ]),
             default_profile: None,
+            theme: Some(PathBuf::from("/path/to/theme/file")),
         };
         assert_eq!(cfg, expected_cfg);
     }
