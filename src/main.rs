@@ -64,8 +64,11 @@ pub mod tui;
 /// `dir-sync` is a command line tool to view the differences and synchronize N directories.
 ///
 /// It uses a Terminal UI interface, unless a Mode option is provided.
+///
+/// If invoked as `dir-diff`, synchronization is not allowed (shortcut for --read-only option)
 #[derive(clap::Parser, Debug)]
 #[command(version(env!("BUILD_GIT_VERSION")))]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Arg {
     #[clap(flatten)]
     mode: Option<Mode>,
@@ -78,6 +81,9 @@ pub struct Arg {
     /// Enable debug output
     #[arg(short, long)]
     debug: bool,
+    /// Read only mode: do not allow nor attempt synchronization actions
+    #[arg(short('r'), long)]
+    read_only: bool,
     /// Resolve all unresolved conflicts by taking the latest file by modification time
     /// CAUTION: use this option with care
     /// - conflicting changes will be overridden
@@ -98,8 +104,11 @@ pub struct Arg {
 #[group(multiple = false)]
 #[allow(clippy::struct_excessive_bools)]
 struct Mode {
+    /// Terminal UI interface (default)
+    #[arg(long, help_heading = "Mode")]
+    tui: bool,
     /// Stop on first difference and exit with failure status (script)
-    #[arg(short('s'), long, help_heading = "Mode")]
+    #[arg(short('S'), long, help_heading = "Mode")]
     status: bool,
     /// Output the differences to stdout, one diff per line
     #[arg(short('o'), long, help_heading = "Mode")]
@@ -126,7 +135,9 @@ impl Arg {
     #[must_use]
     pub fn run_mode(&self) -> RunMode {
         if let Some(mode) = &self.mode {
-            if mode.status {
+            if mode.tui {
+                RunMode::TerminalUI
+            } else if mode.status {
                 RunMode::Status
             } else if mode.output {
                 RunMode::Output

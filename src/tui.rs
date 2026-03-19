@@ -59,7 +59,13 @@ struct App {
 impl App {
     /// Create the application
     #[allow(clippy::unused_async)]
-    async fn new(_arg: Arg) -> anyhow::Result<Self> {
+    async fn new(mut arg: Arg) -> anyhow::Result<Self> {
+        // use read-only mode if invoked as 'dir-diff'
+        let invocation_name = std::env::args().next().expect("cannot get argv[0]");
+        if invocation_name.ends_with("dir-diff") {
+            arg.read_only = true;
+        }
+
         let theme = AppTheme::load(None)?;
         Ok(Self {
             theme,
