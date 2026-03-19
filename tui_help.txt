@@ -3,9 +3,9 @@
 `[Q]`, `[Esc]`       Quit the application
 `[Ctrl]+[C]`       Force quit the application
 `[F1]`, `[H]`, `[?]`   Show Help; any key to exit the help screen
-`[F5]`             View all differences
-`[F6]`             View unresolved conflicts
-`[F7]`             View resolved conflicts
+`[F5]`             View all differences (sync mode)
+`[F6]`             View conflicts (sync mode)
+`[F7]`             View resolved differences (sync mode)
 `[S]`              Perform Synchronization operations and exit
 
 `[0]`              Clear/reset the synchronization operation; will do nothing

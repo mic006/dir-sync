@@ -16,6 +16,7 @@ use serde::{Deserialize, de::Error};
 #[serde(default)]
 pub struct AppTheme {
     pub help: AppHelpTheme,
+    pub confirm_exit: AppConfirmExitTheme,
 }
 
 impl AppTheme {
@@ -48,6 +49,15 @@ pub struct AppHelpTheme {
     pub content_key_stroke: ThemeStyle,
     /// Style for highlighted content (app name)
     pub content_highlight: ThemeStyle,
+}
+
+/// Theme for `ConfirmExit` dialog box
+#[derive(Deserialize, Default, Debug, PartialEq)]
+#[serde(default)]
+pub struct AppConfirmExitTheme {
+    pub border_style: ThemeStyle,
+    pub border_type: ThemeBorderType,
+    pub content: ThemeStyle,
 }
 
 /// Style

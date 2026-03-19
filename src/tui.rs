@@ -42,6 +42,24 @@ enum Screen {
     ConfirmExit,
 }
 
+/// Current view displayed
+#[derive(PartialEq, Debug, Clone, Copy)]
+enum View {
+    /// Diff view, read only mode
+    Diff,
+    /// Sync: view all differences
+    SyncAll,
+    /// Sync: view conflicts
+    SyncConflicts,
+    /// Sync: view resolved differences
+    SyncResolved,
+}
+impl View {
+    fn is_diff(&self) -> bool {
+        matches!(self, Self::Diff)
+    }
+}
+
 /// Terminal UI application
 struct App {
     /// Terminal UI theme
@@ -52,6 +70,8 @@ struct App {
     redraw: bool,
     /// Current screen displayed
     screen: Screen,
+    /// Current view displayed
+    view: View,
     /// Help content, filled on first display of the help screen
     help: Option<help::Help>,
 }
@@ -66,12 +86,19 @@ impl App {
             arg.read_only = true;
         }
 
+        let view = if arg.read_only {
+            View::Diff
+        } else {
+            View::SyncAll
+        };
+
         let theme = AppTheme::load(None)?;
         Ok(Self {
             theme,
             running: true,
             redraw: true,
             screen: Screen::Normal,
+            view,
             help: None,
         })
     }
@@ -124,13 +151,18 @@ impl App {
                                 self.set_screen(Screen::Normal);
                             }
                             Screen::ConfirmExit => match key_event.code {
-                                KeyCode::Char('y' | 'Y') => {
+                                KeyCode::Char('q' | 'Q') => {
                                     // confirm exit without syncing
                                     self.running = false;
                                 }
-                                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                                KeyCode::Char('c' | 'C') | KeyCode::Esc => {
                                     // cancel exit, return to normal screen
                                     self.set_screen(Screen::Normal);
+                                }
+                                KeyCode::Char('s' | 'S') => {
+                                    // do sync operations
+                                    self.set_screen(Screen::Normal);
+                                    anyhow::bail!("TODO: implement sync");
                                 }
                                 _ => {} // ignored key, user must choose
                             },
@@ -154,10 +186,28 @@ impl App {
         match key_event.code {
             // quit
             KeyCode::Char('q' | 'Q') | KeyCode::Esc => {
-                self.running = false;
+                if self.view.is_diff() {
+                    // quit without confirmation
+                    self.running = false;
+                } else {
+                    self.set_screen(Screen::ConfirmExit);
+                }
             }
             KeyCode::Char('h' | 'H' | '?') | KeyCode::F(1) => {
                 self.set_screen(Screen::Help);
+            }
+            KeyCode::F(5) if !self.view.is_diff() => {
+                self.set_view(View::SyncAll);
+            }
+            KeyCode::F(6) if !self.view.is_diff() => {
+                self.set_view(View::SyncConflicts);
+            }
+            KeyCode::F(7) if !self.view.is_diff() => {
+                self.set_view(View::SyncResolved);
+            }
+            KeyCode::Char('s' | 'S') => {
+                // do sync operations
+                anyhow::bail!("TODO: implement sync");
             }
             _ => (), // ignored key
         }
@@ -168,5 +218,13 @@ impl App {
     fn set_screen(&mut self, screen: Screen) {
         self.screen = screen;
         self.redraw = true;
+    }
+
+    /// Change view to be displayed
+    fn set_view(&mut self, view: View) {
+        if view != self.view {
+            self.view = view;
+            self.redraw = true;
+        }
     }
 }
