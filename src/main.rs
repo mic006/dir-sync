@@ -66,7 +66,7 @@ pub mod tui;
 /// It uses a Terminal UI interface, unless a Mode option is provided.
 ///
 /// If invoked as `dir-diff`, synchronization is not allowed (shortcut for --read-only option)
-#[derive(clap::Parser, Debug)]
+#[derive(clap::Parser, Debug, Clone)]
 #[command(version(env!("BUILD_GIT_VERSION")))]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Arg {
@@ -100,7 +100,7 @@ pub struct Arg {
 }
 
 /// Mode of operation
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args, Debug, Clone)]
 #[group(multiple = false)]
 #[allow(clippy::struct_excessive_bools)]
 struct Mode {
@@ -352,7 +352,9 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
             }
         }
     } else {
-        sync_exec::sync_exec(task_tracker, &mut ctx.trees, &diffs).await?;
+        if !diffs.is_empty() {
+            sync_exec::sync_exec(task_tracker, &mut ctx.trees, &diffs).await?;
+        }
         ctx.save_snaps_and_terminate(true).await;
     }
 

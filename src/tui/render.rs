@@ -81,12 +81,18 @@ impl App {
 
         // left side
         let left_str = match self.view {
+            View::Browsing => "Browsing directories…",
             View::Diff => "Differences",
             View::SyncAll => "All differences",
             View::SyncConflicts => "Conflicts",
             View::SyncResolved => "Resolved",
+            View::Syncing => "Synchronizing directories…",
         };
-        let left_str = format!("{left_str} [a-b/c]"); // TODO: fill a/b/c
+        let left_str = if self.view.are_diffs_rendered() {
+            format!("{left_str} [a-b/c]") // TODO: fill a/b/c
+        } else {
+            left_str.into()
+        };
         Line::styled(left_str, style)
             .left_aligned()
             .render(left_area, buf);

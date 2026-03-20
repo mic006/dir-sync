@@ -6,8 +6,10 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt as _;
 
-use crate::Arg;
-use crate::generic::task_tracker::{TaskExit, TaskTrackerMain, TrackedTaskResult};
+use crate::diff::{DiffEntry, DiffMode};
+use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
+use crate::sync_plan::SyncMode;
+use crate::{Arg, RunContext};
 
 use theme::AppTheme;
 
@@ -22,13 +24,27 @@ mod theme;
 /// - invalid arguments
 /// - cannot create trees
 pub async fn async_main_tui(arg: Arg) -> anyhow::Result<std::process::ExitCode> {
-    let app = App::new(arg).await?;
+    anyhow::ensure!(
+        arg.dirs.len() >= 2,
+        "TUI mode: expects at least 2 directories"
+    );
+
+    let (exit_message_sender, exit_message_receiver) = flume::bounded(1);
+
     let task_tracker_main = TaskTrackerMain::default();
     task_tracker_main.setup_signal_catching()?;
+    let app = App::new(task_tracker_main.tracker(), arg, exit_message_sender).await?;
     task_tracker_main.spawn(app.task())?;
     let result = task_tracker_main.wait().await;
     ratatui::restore();
-    result
+    let result = result?;
+
+    // get exit message if any
+    if let Ok(exit_message) = exit_message_receiver.try_recv() {
+        println!("{exit_message}");
+    }
+
+    Ok(result)
 }
 
 /// Screen currently displayed
@@ -45,6 +61,8 @@ enum Screen {
 /// Current view displayed
 #[derive(PartialEq, Debug, Clone, Copy)]
 enum View {
+    /// Initial view: wait for end of browsing trees
+    Browsing,
     /// Diff view, read only mode
     Diff,
     /// Sync: view all differences
@@ -53,15 +71,41 @@ enum View {
     SyncConflicts,
     /// Sync: view resolved differences
     SyncResolved,
+    /// Exit view: wait for end of sync actions
+    Syncing,
 }
 impl View {
     fn is_diff(&self) -> bool {
-        matches!(self, Self::Diff)
+        *self == Self::Diff
     }
+
+    fn are_diffs_rendered(&self) -> bool {
+        *self == Self::Diff
+            || *self == Self::SyncAll
+            || *self == Self::SyncConflicts
+            || *self == Self::SyncResolved
+    }
+}
+
+/// Background task event towards app event loop
+enum AppTaskEvent {
+    /// Context determined by `init_task`
+    Context(Context),
+    /// Sync completed by `sync_task`
+    SyncCompleted,
+}
+
+/// Context for tree and diffs
+struct Context {
+    run_ctx: RunContext,
+    diffs: Vec<DiffEntry>,
 }
 
 /// Terminal UI application
 struct App {
+    task_tracker: TaskTracker,
+    /// CLI arguments
+    arg: Arg,
     /// Terminal UI theme
     theme: AppTheme,
     /// Indication that application shall run / exit
@@ -72,35 +116,121 @@ struct App {
     screen: Screen,
     /// Current view displayed
     view: View,
+    /// Whether synchronization has been done
+    sync_done: bool,
     /// Help content, filled on first display of the help screen
     help: Option<help::Help>,
+    /// Send an exit message to the user (after terminal restore)
+    exit_message_sender: flume::Sender<String>,
+    /// Events from background task
+    task_event_receiver: flume::Receiver<AppTaskEvent>,
+    task_event_sender: flume::Sender<AppTaskEvent>,
+    /// Received context
+    context: Option<Context>,
 }
 
 impl App {
     /// Create the application
-    #[allow(clippy::unused_async)]
-    async fn new(mut arg: Arg) -> anyhow::Result<Self> {
+    async fn new(
+        task_tracker: TaskTracker,
+        mut arg: Arg,
+        exit_message_sender: flume::Sender<String>,
+    ) -> anyhow::Result<Self> {
         // use read-only mode if invoked as 'dir-diff'
         let invocation_name = std::env::args().next().expect("cannot get argv[0]");
         if invocation_name.ends_with("dir-diff") {
             arg.read_only = true;
         }
 
-        let view = if arg.read_only {
-            View::Diff
-        } else {
-            View::SyncAll
-        };
+        // spawn all trees
+        let run_ctx = RunContext::new(&task_tracker, &arg, !arg.read_only).await?;
+        let (task_event_sender, task_event_receiver) = flume::bounded(1);
+        // spawn init task to let app start
+        task_tracker.spawn(Self::init_task(
+            task_tracker.clone(),
+            arg.clone(),
+            task_event_sender.clone(),
+            run_ctx,
+        ))?;
 
         let theme = AppTheme::load(None)?;
         Ok(Self {
+            task_tracker,
+            arg,
             theme,
             running: true,
             redraw: true,
             screen: Screen::Normal,
-            view,
+            view: View::Browsing,
+            sync_done: false,
             help: None,
+            exit_message_sender,
+            task_event_receiver,
+            task_event_sender,
+            context: None,
         })
+    }
+
+    /// Init background task
+    ///
+    /// Perform the steps of `sync_main`
+    /// - create `RunContext` to spawn all trees
+    /// - wait for tree walk completion
+    /// - perform diff
+    /// - determine sync plan if applicable
+    /// - return `RunContext` + diff to App
+    async fn init_task(
+        task_tracker: TaskTracker,
+        arg: Arg,
+        task_event_sender: flume::Sender<AppTaskEvent>,
+        mut run_ctx: RunContext,
+    ) -> TrackedTaskResult {
+        // wait for tree walk completion
+        for tree in &mut run_ctx.trees {
+            tree.wait_for_tree().await?;
+        }
+
+        // perform diff
+        let mut diffs = {
+            let root_entries = run_ctx.get_root_entries()?;
+            crate::diff::diff_trees(
+                task_tracker.clone(),
+                &root_entries.as_ref(),
+                DiffMode::Output,
+            )?
+        };
+
+        if !arg.read_only {
+            // get prev_snaps from all trees
+            let prev_sync_snaps = run_ctx.get_prev_sync_snaps();
+
+            // determine sync plan
+            let sync_mode = if arg.latest {
+                SyncMode::Latest
+            } else {
+                SyncMode::Standard
+            };
+            crate::sync_plan::sync_plan(task_tracker, prev_sync_snaps, sync_mode, &mut diffs)?;
+        }
+
+        task_event_sender.send(AppTaskEvent::Context(Context { run_ctx, diffs }))?;
+
+        Ok(TaskExit::SecondaryTaskKeepRunning)
+    }
+
+    /// Background task: perform synchronization operations
+    async fn sync_task(
+        task_tracker: TaskTracker,
+        task_event_sender: flume::Sender<AppTaskEvent>,
+        mut run_ctx: RunContext,
+        diffs: Vec<DiffEntry>,
+    ) -> TrackedTaskResult {
+        crate::sync_exec::sync_exec(task_tracker, &mut run_ctx.trees, &diffs).await?;
+        run_ctx.save_snaps_and_terminate(true).await;
+
+        task_event_sender.send(AppTaskEvent::SyncCompleted)?;
+
+        Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 
     /// Execute the application
@@ -116,18 +246,49 @@ impl App {
             }
 
             tokio::select! {
-                Some(events) = terminal_events.next() => self.handle_terminal_event(events).await?,
+                Some(events) = terminal_events.next() => self.handle_terminal_event(events),
+                Ok(event) = self.task_event_receiver.recv_async() => self.handle_task_event(event),
             };
+        }
+
+        if let Some(mut context) = self.context.take() {
+            context
+                .run_ctx
+                .save_snaps_and_terminate(self.sync_done)
+                .await;
         }
 
         Ok(TaskExit::MainTaskStopAppSuccess)
     }
 
+    /// Manage background task event
+    fn handle_task_event(&mut self, event: AppTaskEvent) {
+        match event {
+            AppTaskEvent::Context(context) => {
+                let no_diff = context.diffs.is_empty();
+                self.context = Some(context);
+                if no_diff {
+                    if !self.arg.read_only {
+                        self.sync_done = true;
+                    }
+                    self.exit("No difference found between inputs".to_owned());
+                    return;
+                }
+                self.set_view(if self.arg.read_only {
+                    View::Diff
+                } else {
+                    View::SyncAll
+                });
+            }
+            AppTaskEvent::SyncCompleted => {
+                self.sync_done = true;
+                self.exit("Synchronization completed successfully".to_owned());
+            }
+        }
+    }
+
     /// Manage terminal events
-    async fn handle_terminal_event(
-        &mut self,
-        events: Vec<Result<Event, std::io::Error>>,
-    ) -> anyhow::Result<()> {
+    fn handle_terminal_event(&mut self, events: Vec<Result<Event, std::io::Error>>) {
         for event in events {
             let Ok(event) = event else {
                 // ignore error events
@@ -144,7 +305,7 @@ impl App {
                     } else {
                         match self.screen {
                             Screen::Normal => {
-                                self.handle_key_event_screen_normal(key_event).await?;
+                                self.handle_key_event_screen_normal(key_event);
                             }
                             Screen::Help => {
                                 // any key => leave help and return to normal screen
@@ -162,7 +323,7 @@ impl App {
                                 KeyCode::Char('s' | 'S') => {
                                     // do sync operations
                                     self.set_screen(Screen::Normal);
-                                    anyhow::bail!("TODO: implement sync");
+                                    self.start_sync();
                                 }
                                 _ => {} // ignored key, user must choose
                             },
@@ -178,14 +339,12 @@ impl App {
                 break;
             }
         }
-        Ok(())
     }
 
-    #[allow(clippy::unused_async)]
-    async fn handle_key_event_screen_normal(&mut self, key_event: KeyEvent) -> anyhow::Result<()> {
+    fn handle_key_event_screen_normal(&mut self, key_event: KeyEvent) {
         match key_event.code {
             // quit
-            KeyCode::Char('q' | 'Q') | KeyCode::Esc => {
+            KeyCode::Char('q' | 'Q') | KeyCode::Esc if self.view.are_diffs_rendered() => {
                 if self.view.is_diff() {
                     // quit without confirmation
                     self.running = false;
@@ -196,22 +355,21 @@ impl App {
             KeyCode::Char('h' | 'H' | '?') | KeyCode::F(1) => {
                 self.set_screen(Screen::Help);
             }
-            KeyCode::F(5) if !self.view.is_diff() => {
+            KeyCode::F(5) if self.view.are_diffs_rendered() && !self.view.is_diff() => {
                 self.set_view(View::SyncAll);
             }
-            KeyCode::F(6) if !self.view.is_diff() => {
+            KeyCode::F(6) if self.view.are_diffs_rendered() && !self.view.is_diff() => {
                 self.set_view(View::SyncConflicts);
             }
-            KeyCode::F(7) if !self.view.is_diff() => {
+            KeyCode::F(7) if self.view.are_diffs_rendered() && !self.view.is_diff() => {
                 self.set_view(View::SyncResolved);
             }
-            KeyCode::Char('s' | 'S') => {
+            KeyCode::Char('s' | 'S') if self.view.are_diffs_rendered() && !self.view.is_diff() => {
                 // do sync operations
-                anyhow::bail!("TODO: implement sync");
+                self.start_sync();
             }
             _ => (), // ignored key
         }
-        Ok(())
     }
 
     /// Change screen to be displayed
@@ -226,5 +384,23 @@ impl App {
             self.view = view;
             self.redraw = true;
         }
+    }
+
+    /// Start the synchronization process
+    fn start_sync(&mut self) {
+        let ctx = self.context.take().unwrap();
+        let _ignored = self.task_tracker.spawn(Self::sync_task(
+            self.task_tracker.clone(),
+            self.task_event_sender.clone(),
+            ctx.run_ctx,
+            ctx.diffs,
+        ));
+        self.set_view(View::Syncing);
+    }
+
+    /// exit with message
+    fn exit(&mut self, msg: String) {
+        self.running = false;
+        let _ignored = self.exit_message_sender.send(msg);
     }
 }
