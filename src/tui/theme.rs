@@ -15,6 +15,7 @@ use serde::{Deserialize, de::Error};
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
 pub struct AppTheme {
+    pub main: AppMainTheme,
     pub help: AppHelpTheme,
     pub confirm_exit: AppConfirmExitTheme,
 }
@@ -36,6 +37,18 @@ impl FromStr for AppTheme {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(serde_yaml::from_str::<Self>(s)?)
     }
+}
+
+/// Them for Main screen
+#[derive(Deserialize, Default, Debug, PartialEq)]
+#[serde(default)]
+pub struct AppMainTheme {
+    pub bars: ThemeStyle,
+    pub title: ThemeStyle,
+    /// Style for key strokes
+    pub key_stroke: ThemeStyle,
+    /// Style for active view (F5/F6/F7)
+    pub active_view: ThemeStyle,
 }
 
 /// Theme for Help screen

@@ -2,6 +2,17 @@
 
 # default theme, using shades of blue
 
+main:
+  bars:
+    fg: "#FFFFFF"
+    bg: "#04409F" # md.ref.palette.blue30
+  title:
+    effect: bold
+  key_stroke:
+    fg: "#FFE07C" # md.ref.palette.yellow90
+  active_view:
+    bg: "#1157CE" # md.ref.palette.blue40
+
 help:
   border_style:
     fg: "#FF8D41" # md.ref.palette.orange70
@@ -12,10 +23,8 @@ help:
     bg: "#000000"
   content_key_stroke:
     fg: "#FFE07C" # md.ref.palette.yellow90
-    bg: "#000000"
   content_highlight:
     fg: "#FFFFFF"
-    bg: "#000000"
 
 confirm_exit:
   border_style:
