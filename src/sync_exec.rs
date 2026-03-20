@@ -15,6 +15,15 @@ use crate::proto::{
 };
 use crate::tree::{ActionReqSender, ActionRspReceiver, Tree};
 
+/// Sync statistics
+#[derive(Default)]
+pub struct SyncStat {
+    /// number of synchronized files
+    pub sync_files: usize,
+    /// number of conflict files, unresolved
+    pub conflict_files: usize,
+}
+
 /// Execute actions to synchronize the trees
 ///
 /// # Errors
@@ -23,7 +32,7 @@ pub async fn sync_exec(
     task_tracker: TaskTracker,
     trees: &mut [Box<dyn Tree + Send + Sync>],
     diff_entries: &[DiffEntry],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<SyncStat> {
     let mut ctx = SyncExecCtx::new(task_tracker, trees, diff_entries);
     ctx.sync_exec().await
 }
@@ -86,9 +95,9 @@ impl<'a> SyncExecCtx<'a> {
         }
     }
 
-    async fn sync_exec(&mut self) -> anyhow::Result<()> {
+    async fn sync_exec(&mut self) -> anyhow::Result<SyncStat> {
         // preparation: determine actions to perform
-        self.prepare();
+        let sync_stat = self.prepare();
 
         // spawn task to handle incoming streams from all trees
         let (end_marker_notif_sender, end_marker_notif_receiver) = flume::bounded(1);
@@ -134,15 +143,18 @@ impl<'a> SyncExecCtx<'a> {
             // read data have been completely processed
         }
 
-        Ok(())
+        Ok(sync_stat)
     }
 
     /// Go through `self.diff_entries` and fill `self.act_delete` & `self.act_update` & `self.file_data_ctx`
-    fn prepare(&mut self) {
+    fn prepare(&mut self) -> SyncStat {
+        let mut sync_stat = SyncStat::default();
         let mut file_data_ctx = HashMap::with_capacity(self.diff_entries.len());
 
         for (i, diff_entry) in self.diff_entries.iter().enumerate() {
             if let Some(src_idx) = diff_entry.sync_source_index {
+                sync_stat.sync_files += 1;
+
                 let src_idx = src_idx as usize;
                 if let Some(src_entry) = &diff_entry.entries[src_idx] {
                     // source has entry => update entry
@@ -207,9 +219,12 @@ impl<'a> SyncExecCtx<'a> {
                     // source has no entry => delete entry
                     self.act_delete.push(i);
                 }
+            } else {
+                sync_stat.conflict_files += 1;
             }
         }
         self.file_data_ctx = Arc::new(file_data_ctx);
+        sync_stat
     }
 
     /// Handle deletion of one entry

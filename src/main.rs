@@ -59,6 +59,9 @@ pub mod tree_local;
 pub mod tree_remote;
 pub mod tui;
 
+/// Exit code to report that some conflicts remain after synchronization
+const EXIT_CODE_SYNC_CONFLICT: u8 = 2;
+
 /// Dir-sync
 ///
 /// `dir-sync` is a command line tool to view the differences and synchronize N directories.
@@ -66,6 +69,11 @@ pub mod tui;
 /// It uses a Terminal UI interface, unless a Mode option is provided.
 ///
 /// If invoked as `dir-diff`, synchronization is not allowed (shortcut for --read-only option)
+///
+/// Exit code:
+/// 0 - success
+/// 1 - generic failure
+/// 2 - synchronization done, but some conflicts remain
 #[derive(clap::Parser, Debug, Clone)]
 #[command(version(env!("BUILD_GIT_VERSION")))]
 #[allow(clippy::struct_excessive_bools)]
@@ -309,6 +317,8 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
         "Sync mode: expects at least 2 directories"
     );
 
+    let mut exit_code = TaskExit::MainTaskStopAppSuccess;
+
     // spawn all trees
     let mut ctx = RunContext::new(&task_tracker, &arg, true).await?;
     // wait for tree walk completion
@@ -353,12 +363,17 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
         }
     } else {
         if !diffs.is_empty() {
-            sync_exec::sync_exec(task_tracker, &mut ctx.trees, &diffs).await?;
+            let sync_stat = sync_exec::sync_exec(task_tracker, &mut ctx.trees, &diffs).await?;
+            if sync_stat.conflict_files > 0 {
+                // report that synchronization is not perfect, some conflicts remain
+                exit_code =
+                    TaskExit::MainTaskStopAppFailure(ExitCode::from(EXIT_CODE_SYNC_CONFLICT));
+            }
         }
         ctx.save_snaps_and_terminate(true).await;
     }
 
-    Ok(TaskExit::MainTaskStopAppSuccess)
+    Ok(exit_code)
 }
 
 async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {

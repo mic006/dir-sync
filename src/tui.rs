@@ -8,6 +8,7 @@ use futures::StreamExt as _;
 
 use crate::diff::{DiffEntry, DiffMode};
 use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
+use crate::sync_exec::SyncStat;
 use crate::sync_plan::SyncMode;
 use crate::{Arg, RunContext};
 
@@ -30,10 +31,11 @@ pub async fn async_main_tui(arg: Arg) -> anyhow::Result<std::process::ExitCode> 
     );
 
     let (exit_message_sender, exit_message_receiver) = flume::bounded(1);
+    let theme = AppTheme::load(None)?;
 
     let task_tracker_main = TaskTrackerMain::default();
     task_tracker_main.setup_signal_catching()?;
-    let app = App::new(task_tracker_main.tracker(), arg, exit_message_sender).await?;
+    let app = App::new(task_tracker_main.tracker(), arg, exit_message_sender, theme);
     task_tracker_main.spawn(app.task())?;
     let result = task_tracker_main.wait().await;
     ratatui::restore();
@@ -41,7 +43,7 @@ pub async fn async_main_tui(arg: Arg) -> anyhow::Result<std::process::ExitCode> 
 
     // get exit message if any
     if let Ok(exit_message) = exit_message_receiver.try_recv() {
-        println!("{exit_message}");
+        eprintln!("{exit_message}");
     }
 
     Ok(result)
@@ -92,7 +94,7 @@ enum AppTaskEvent {
     /// Context determined by `init_task`
     Context(Context),
     /// Sync completed by `sync_task`
-    SyncCompleted,
+    SyncCompleted(SyncStat),
 }
 
 /// Context for tree and diffs
@@ -131,30 +133,21 @@ struct App {
 
 impl App {
     /// Create the application
-    async fn new(
+    fn new(
         task_tracker: TaskTracker,
         mut arg: Arg,
         exit_message_sender: flume::Sender<String>,
-    ) -> anyhow::Result<Self> {
+        theme: AppTheme,
+    ) -> Self {
         // use read-only mode if invoked as 'dir-diff'
         let invocation_name = std::env::args().next().expect("cannot get argv[0]");
         if invocation_name.ends_with("dir-diff") {
             arg.read_only = true;
         }
 
-        // spawn all trees
-        let run_ctx = RunContext::new(&task_tracker, &arg, !arg.read_only).await?;
         let (task_event_sender, task_event_receiver) = flume::bounded(1);
-        // spawn init task to let app start
-        task_tracker.spawn(Self::init_task(
-            task_tracker.clone(),
-            arg.clone(),
-            task_event_sender.clone(),
-            run_ctx,
-        ))?;
 
-        let theme = AppTheme::load(None)?;
-        Ok(Self {
+        Self {
             task_tracker,
             arg,
             theme,
@@ -168,7 +161,7 @@ impl App {
             task_event_receiver,
             task_event_sender,
             context: None,
-        })
+        }
     }
 
     /// Init background task
@@ -183,8 +176,10 @@ impl App {
         task_tracker: TaskTracker,
         arg: Arg,
         task_event_sender: flume::Sender<AppTaskEvent>,
-        mut run_ctx: RunContext,
     ) -> TrackedTaskResult {
+        // spawn all trees
+        let mut run_ctx = RunContext::new(&task_tracker, &arg, !arg.read_only).await?;
+
         // wait for tree walk completion
         for tree in &mut run_ctx.trees {
             tree.wait_for_tree().await?;
@@ -225,16 +220,24 @@ impl App {
         mut run_ctx: RunContext,
         diffs: Vec<DiffEntry>,
     ) -> TrackedTaskResult {
-        crate::sync_exec::sync_exec(task_tracker, &mut run_ctx.trees, &diffs).await?;
+        let sync_stat =
+            crate::sync_exec::sync_exec(task_tracker, &mut run_ctx.trees, &diffs).await?;
         run_ctx.save_snaps_and_terminate(true).await;
 
-        task_event_sender.send(AppTaskEvent::SyncCompleted)?;
+        task_event_sender.send(AppTaskEvent::SyncCompleted(sync_stat))?;
 
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
 
     /// Execute the application
     async fn task(mut self) -> TrackedTaskResult {
+        // spawn init task
+        self.task_tracker.spawn(Self::init_task(
+            self.task_tracker.clone(),
+            self.arg.clone(),
+            self.task_event_sender.clone(),
+        ))?;
+
         let mut terminal = ratatui::init();
         let mut terminal_events = crossterm::event::EventStream::new().ready_chunks(16);
 
@@ -280,9 +283,16 @@ impl App {
                     View::SyncAll
                 });
             }
-            AppTaskEvent::SyncCompleted => {
+            AppTaskEvent::SyncCompleted(sync_stat) => {
                 self.sync_done = true;
-                self.exit("Synchronization completed successfully".to_owned());
+                self.exit(format!(
+                    concat!(
+                        "Synchronization completed successfully:\n",
+                        "- {} files synchronized\n",
+                        "- {} conflicts remaining"
+                    ),
+                    sync_stat.sync_files, sync_stat.conflict_files
+                ));
             }
         }
     }
