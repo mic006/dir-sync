@@ -1,8 +1,10 @@
 //! Rendering of TUI application on terminal
 
+use std::rc::Rc;
+
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Clear, Padding, Paragraph, Widget},
@@ -27,7 +29,18 @@ impl Widget for &mut App {
 impl App {
     /// Render normal screen
     fn render_screen_normal(&mut self, area: Rect, buf: &mut Buffer) {
-        self.render_screen_normal_top_bar(area, buf);
+        let [top_bar_area, list_area, middle_bar_area, content_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(area);
+
+        self.render_screen_normal_top_bar(top_bar_area, buf);
+        self.render_screen_normal_list(list_area, buf);
+        self.render_screen_normal_middle_bar(middle_bar_area, buf);
+        self.render_screen_normal_content(content_area, buf);
     }
 
     /// Render top bar of normal screen
@@ -45,8 +58,7 @@ impl App {
     /// Right:
     /// - `View::Diff`: nothing
     /// - `View::Sync*`: shortcut keys for view with highlight of active view
-    fn render_screen_normal_top_bar(&self, mut area: Rect, buf: &mut Buffer) {
-        area.height = 1;
+    fn render_screen_normal_top_bar(&self, area: Rect, buf: &mut Buffer) {
         let style = &self.theme.main.bars;
 
         let title = if self.view.is_diff() {
@@ -55,24 +67,12 @@ impl App {
             " dir-sync "
         };
 
-        /* split bar in 3
-         * - middle part fits title
-         * - left part from start to middle part
-         * - right part from middle part to end
-         */
-        let middle_area = area.centered_horizontally(Constraint::Length(title.len() as u16));
-        let left_area = Rect {
-            height: 1,
-            width: middle_area.left(),
-            x: 0,
-            y: 0,
-        };
-        let right_area = Rect {
-            height: 1,
-            width: area.width - middle_area.right(),
-            x: middle_area.right(),
-            y: 0,
-        };
+        let [left_area, middle_area, right_area] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(title.len() as u16),
+            Constraint::Fill(1),
+        ])
+        .areas(area);
 
         // middle
         Line::from(Span::styled(title, &self.theme.main.title))
@@ -127,6 +127,52 @@ impl App {
                 .right_aligned()
                 .render(right_area, buf);
         }
+    }
+
+    /// Render list of diffs of normal screen
+    ///
+    /// - display part of the list, fitting the area
+    /// - highlight selected item
+    /// - display scroll bar
+    #[allow(clippy::unused_self)]
+    fn render_screen_normal_list(&self, _area: Rect, _buf: &mut Buffer) {}
+
+    /// Render middle bar of normal screen
+    ///
+    /// Name of each tree on top of its content area
+    fn render_screen_normal_middle_bar(&self, area: Rect, buf: &mut Buffer) {
+        let areas = self.split_area_per_tree(area, buf);
+        std::iter::zip(areas.iter(), self.arg.dirs.iter()).for_each(|(area, dir)| {
+            Line::styled(dir, &self.theme.main.bars)
+                .centered()
+                .render(*area, buf);
+        });
+    }
+
+    /// Render content of each tree on normal screen
+    ///
+    /// - display metadata of the selected item for each tree
+    /// - display content of the selected item for each tree
+    /// - highlight differences between the trees
+    /// - display scroll bar
+    fn render_screen_normal_content(&self, area: Rect, buf: &mut Buffer) {
+        let _areas = self.split_area_per_tree(area, buf);
+    }
+
+    /// Split one area into sub-area, one for each tree
+    ///
+    /// Fill spacers with bar style
+    fn split_area_per_tree(&self, area: Rect, buf: &mut Buffer) -> Rc<[Rect]> {
+        let (areas, spacers) =
+            Layout::horizontal(std::iter::repeat_n(Constraint::Fill(1), self.nb_trees()))
+                .spacing(1)
+                .split_with_spacers(area);
+
+        // fill spacers with bar style
+        for spacer in spacers.iter() {
+            buf.set_style(*spacer, &self.theme.main.bars);
+        }
+        areas
     }
 
     /// Render Help screen
@@ -252,5 +298,10 @@ impl App {
             Effect::Highlight => Style::from(&self.theme.help.content_highlight),
         };
         Span::styled(txt.text.as_str(), style)
+    }
+
+    /// Number of trees to be displayed
+    fn nb_trees(&self) -> usize {
+        self.arg.dirs.len()
     }
 }
