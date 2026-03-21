@@ -17,6 +17,7 @@ use theme::AppTheme;
 mod help;
 mod render;
 mod rich_text;
+mod scroll_bar;
 mod theme;
 
 /// Terminal UI entry point
