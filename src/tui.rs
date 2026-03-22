@@ -12,9 +12,11 @@ use crate::sync_exec::SyncStat;
 use crate::sync_plan::SyncMode;
 use crate::{Arg, RunContext};
 
+use list_panel::{ListPanelMove, ListPanelSelection};
 use theme::AppTheme;
 
 mod help;
+mod list_panel;
 mod render;
 mod rich_text;
 mod scroll_bar;
@@ -93,15 +95,23 @@ impl View {
 /// Background task event towards app event loop
 enum AppTaskEvent {
     /// Context determined by `init_task`
-    Context(Context),
+    InitContext(InitContext),
     /// Sync completed by `sync_task`
     SyncCompleted(SyncStat),
 }
 
-/// Context for tree and diffs
+/// Context for tree and diffs, transferred between `init_task` and app
+struct InitContext {
+    run_ctx: RunContext,
+    diffs: Vec<DiffEntry>,
+}
+
+/// Application runtime context (displaying diffs)
 struct Context {
     run_ctx: RunContext,
     diffs: Vec<DiffEntry>,
+    /// Diff list panel
+    diff_list: ListPanelSelection,
 }
 
 /// Terminal UI application
@@ -128,7 +138,7 @@ struct App {
     /// Events from background task
     task_event_receiver: flume::Receiver<AppTaskEvent>,
     task_event_sender: flume::Sender<AppTaskEvent>,
-    /// Received context
+    /// Runtime  context
     context: Option<Context>,
 }
 
@@ -209,7 +219,7 @@ impl App {
             crate::sync_plan::sync_plan(task_tracker, prev_sync_snaps, sync_mode, &mut diffs)?;
         }
 
-        task_event_sender.send(AppTaskEvent::Context(Context { run_ctx, diffs }))?;
+        task_event_sender.send(AppTaskEvent::InitContext(InitContext { run_ctx, diffs }))?;
 
         Ok(TaskExit::SecondaryTaskKeepRunning)
     }
@@ -268,9 +278,16 @@ impl App {
     /// Manage background task event
     fn handle_task_event(&mut self, event: AppTaskEvent) {
         match event {
-            AppTaskEvent::Context(context) => {
+            AppTaskEvent::InitContext(context) => {
                 let no_diff = context.diffs.is_empty();
-                self.context = Some(context);
+                // TODO: let diff_list = ListPanelSelection::new(context.diffs.len());
+                let diff_list =
+                    ListPanelSelection::new(10_usize.pow(self.arg.dirs.len() as u32 - 1));
+                self.context = Some(Context {
+                    run_ctx: context.run_ctx,
+                    diffs: context.diffs,
+                    diff_list,
+                });
                 if no_diff {
                     if !self.arg.read_only {
                         self.sync_done = true;
@@ -352,6 +369,7 @@ impl App {
         }
     }
 
+    /// Manage key events for normal screen
     fn handle_key_event_screen_normal(&mut self, key_event: KeyEvent) {
         match key_event.code {
             // quit
@@ -379,7 +397,21 @@ impl App {
                 // do sync operations
                 self.start_sync();
             }
+            KeyCode::Home => self.handle_key_diff_nav(ListPanelMove::Start),
+            KeyCode::End => self.handle_key_diff_nav(ListPanelMove::End),
+            KeyCode::PageUp => self.handle_key_diff_nav(ListPanelMove::PageUp),
+            KeyCode::PageDown => self.handle_key_diff_nav(ListPanelMove::PageDown),
+            KeyCode::Up => self.handle_key_diff_nav(ListPanelMove::LineUp),
+            KeyCode::Down => self.handle_key_diff_nav(ListPanelMove::LineDown),
             _ => (), // ignored key
+        }
+    }
+
+    /// Manage navigation keys for diff list
+    fn handle_key_diff_nav(&mut self, event: ListPanelMove) {
+        if let Some(context) = &mut self.context {
+            context.diff_list.handle(event);
+            self.redraw = true;
         }
     }
 

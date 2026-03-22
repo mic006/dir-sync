@@ -1,30 +1,6 @@
 //! Scroll bar helper
 
-/*
-/// Scroll bar is on the right side of the screen
-/// Use octant unicode characters to display the scroll bar on the right half side
-/// Array is indexed by bitmap value of 4 bits, bit #0 at top right and bit #3 at bottom right
-const SB_OCTANT: [char; 16] = [
-    '\u{20}',    // 0000
-    '\u{1CEAB}', // 0001
-    '\u{1CD03}', // 0010
-    '\u{259D}',  // 0011
-    '\u{1CD18}', // 0100
-    '\u{1CD1A}', // 0101
-    '\u{1FBE7}', // 0110
-    '\u{1CD21}', // 0111
-    '\u{1CEA0}', // 1000
-    '\u{1CD72}', // 1001
-    '\u{1CD78}', // 1010
-    '\u{1CD7A}', // 1011
-    '\u{2597}',  // 1100
-    '\u{1CD91}', // 1101
-    '\u{1CD96}', // 1110
-    '\u{2590}',  // 1111
-];
-*/
-
-/// Scroll bar drawing with unicode characters
+/// Scroll bar drawing with Unicode characters
 ///
 /// Indexed by (length-1) first, then by start index
 const SB_OCTANT: [[char; 4]; 4] = [

@@ -33,14 +33,15 @@ impl App {
             Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(1),
-            Constraint::Fill(1),
+            Constraint::Fill(1), // TODO: make fill factors configurable, content is more important than list
         ])
         .areas(area);
 
-        self.render_screen_normal_top_bar(top_bar_area, buf);
         self.render_screen_normal_list(list_area, buf);
         self.render_screen_normal_middle_bar(middle_bar_area, buf);
         self.render_screen_normal_content(content_area, buf);
+        // render top bar at the end to have normalized list panel info
+        self.render_screen_normal_top_bar(top_bar_area, buf);
     }
 
     /// Render top bar of normal screen
@@ -88,8 +89,14 @@ impl App {
             View::SyncResolved => "Resolved",
             View::Syncing => "Synchronizing directories…",
         };
-        let left_str = if self.view.are_diffs_rendered() {
-            format!("{left_str} [a-b/c]") // TODO: fill a/b/c
+        let left_str = if let Some(context) = &self.context {
+            let view_range = context.diff_list.view_range();
+            format!(
+                "{left_str} [{}-{}/{}]",
+                view_range.start + 1, // human count, 1-based display
+                view_range.end,
+                context.diff_list.content_length
+            )
         } else {
             left_str.into()
         };
@@ -134,8 +141,20 @@ impl App {
     /// - display part of the list, fitting the area
     /// - highlight selected item
     /// - display scroll bar
-    #[allow(clippy::unused_self)]
-    fn render_screen_normal_list(&self, _area: Rect, _buf: &mut Buffer) {}
+    fn render_screen_normal_list(&mut self, area: Rect, buf: &mut Buffer) {
+        if let Some(context) = &mut self.context {
+            context.diff_list.normalize(area.height.into());
+
+            for (i, row) in std::iter::zip(context.diff_list.view_range(), area.rows()) {
+                let style = if i == context.diff_list.selected {
+                    Style::default().reversed()
+                } else {
+                    Style::default()
+                };
+                Line::styled(i.to_string(), style).render(row, buf);
+            }
+        }
+    }
 
     /// Render middle bar of normal screen
     ///
