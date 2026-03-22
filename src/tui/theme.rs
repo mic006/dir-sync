@@ -1,6 +1,5 @@
 //! Theme file for Terminal UI rendering
 
-use std::ops::Deref;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -15,9 +14,16 @@ use serde::{Deserialize, de::Error};
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
 pub struct AppTheme {
-    pub main: AppMainTheme,
-    pub help: AppHelpTheme,
-    pub confirm_exit: AppConfirmExitTheme,
+    /// Display height repartition between list of diff and content of one diff
+    /// Ex: `fill_factor_list=1`, `fill_factor_content=3` allocates 1/4 for list and 3/4 for content
+    fill_factor_list: u16,
+    fill_factor_content: u16,
+    /// Default style for all content
+    content: ThemeStyle,
+    bar: AppBarTheme,
+    main: AppMainTheme,
+    help: AppHelpTheme,
+    confirm_exit: AppConfirmExitTheme,
 }
 
 impl AppTheme {
@@ -30,6 +36,96 @@ impl AppTheme {
         };
         Self::from_str(&theme_str)
     }
+
+    /// Get fill factors for list vs content (up pane vs bottom pane)
+    #[must_use]
+    pub fn fill_factors(&self) -> (u16, u16) {
+        (self.fill_factor_list, self.fill_factor_content)
+    }
+
+    /// Get content style
+    #[must_use]
+    pub fn content_style(&self) -> Style {
+        Style::from(&self.content)
+    }
+
+    /// Get bars, headers, separators style
+    #[must_use]
+    pub fn bar_style(&self) -> Style {
+        self.content_style().patch(Style::from(&self.bar.base))
+    }
+
+    /// Get main title style
+    #[must_use]
+    pub fn bar_title_style(&self) -> Style {
+        self.bar_style().patch(Style::from(&self.bar.title))
+    }
+
+    /// Get keystroke style patch
+    #[must_use]
+    pub fn bar_key_stroke_style_patch(&self) -> Style {
+        Style::from(&self.bar.key_stroke)
+    }
+
+    /// Get active view style
+    #[must_use]
+    pub fn bar_active_view_style(&self) -> Style {
+        self.bar_style().patch(Style::from(&self.bar.active_view))
+    }
+
+    /// Get selected item style in main panes
+    #[must_use]
+    pub fn main_selected_item_style(&self) -> Style {
+        self.content_style()
+            .patch(Style::from(&self.main.selected_item))
+    }
+
+    /// Get scroll bar style in main panes
+    #[must_use]
+    pub fn main_scroll_bar_style(&self) -> Style {
+        self.content_style()
+            .patch(Style::from(&self.main.scroll_bar))
+    }
+
+    /// Get border style for help screen
+    #[must_use]
+    pub fn help_border_style(&self) -> Style {
+        self.content_style()
+            .patch(Style::from(&self.help.border_style))
+    }
+
+    /// Get border type for help screen
+    #[must_use]
+    pub fn help_border_type(&self) -> BorderType {
+        self.help.border_type.0
+    }
+
+    /// Get key stroke style for help screen
+    #[must_use]
+    pub fn help_key_stroke_style(&self) -> Style {
+        self.content_style()
+            .patch(Style::from(&self.help.key_stroke))
+    }
+
+    /// Get highlight style for help screen
+    #[must_use]
+    pub fn help_highlight_style(&self) -> Style {
+        self.content_style()
+            .patch(Style::from(&self.help.highlight))
+    }
+
+    /// Get border style for confirm exit screen
+    #[must_use]
+    pub fn confirm_exit_border_style(&self) -> Style {
+        self.content_style()
+            .patch(Style::from(&self.confirm_exit.border_style))
+    }
+
+    /// Get border type for confirm exit screen
+    #[must_use]
+    pub fn confirm_exit_border_type(&self) -> BorderType {
+        self.confirm_exit.border_type.0
+    }
 }
 impl FromStr for AppTheme {
     type Err = anyhow::Error;
@@ -39,38 +135,46 @@ impl FromStr for AppTheme {
     }
 }
 
-/// Them for Main screen
+/// Theme for Bars, headers...
+#[derive(Deserialize, Default, Debug, PartialEq)]
+#[serde(default)]
+pub struct AppBarTheme {
+    /// Base style for bars, headers, separators
+    base: ThemeStyle,
+    /// Main title style
+    title: ThemeStyle,
+    /// Style for key strokes
+    key_stroke: ThemeStyle,
+    /// Style for active view (F5/F6/F7)
+    active_view: ThemeStyle,
+}
+
+/// Theme for Main screen
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
 pub struct AppMainTheme {
-    pub bars: ThemeStyle,
-    pub title: ThemeStyle,
-    /// Style for key strokes
-    pub key_stroke: ThemeStyle,
-    /// Style for active view (F5/F6/F7)
-    pub active_view: ThemeStyle,
+    selected_item: ThemeStyle,
+    scroll_bar: ThemeStyle,
 }
 
 /// Theme for Help screen
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
 pub struct AppHelpTheme {
-    pub border_style: ThemeStyle,
-    pub border_type: ThemeBorderType,
-    pub content: ThemeStyle,
+    border_style: ThemeStyle,
+    border_type: ThemeBorderType,
     /// Style for key strokes
-    pub content_key_stroke: ThemeStyle,
+    key_stroke: ThemeStyle,
     /// Style for highlighted content (app name)
-    pub content_highlight: ThemeStyle,
+    highlight: ThemeStyle,
 }
 
 /// Theme for `ConfirmExit` dialog box
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
 pub struct AppConfirmExitTheme {
-    pub border_style: ThemeStyle,
-    pub border_type: ThemeBorderType,
-    pub content: ThemeStyle,
+    border_style: ThemeStyle,
+    border_type: ThemeBorderType,
 }
 
 /// Style
@@ -88,13 +192,13 @@ impl From<&ThemeStyle> for Style {
     fn from(style: &ThemeStyle) -> Self {
         let mut instance = Style::default();
         if let Some(fg) = &style.fg {
-            instance = instance.fg(**fg);
+            instance = instance.fg(fg.0);
         }
         if let Some(bg) = &style.bg {
-            instance = instance.bg(**bg);
+            instance = instance.bg(bg.0);
         }
         if let Some(effect) = &style.effect {
-            instance = instance.add_modifier(**effect);
+            instance = instance.add_modifier(effect.0);
         }
         instance
     }
@@ -130,14 +234,6 @@ impl FromStr for ThemeColor {
             })?;
             Ok(Self(Color::Indexed(color_code)))
         }
-    }
-}
-
-impl Deref for ThemeColor {
-    type Target = Color;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 
@@ -180,14 +276,6 @@ impl FromStr for TextEffect {
     }
 }
 
-impl Deref for TextEffect {
-    type Target = Modifier;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 /// Border type
 #[derive(Default, Debug, PartialEq)]
 pub struct ThemeBorderType(BorderType);
@@ -221,14 +309,6 @@ impl FromStr for ThemeBorderType {
             "quadrant-outside" => Ok(Self(BorderType::QuadrantOutside)),
             _ => anyhow::bail!("unknown border type '{s}'"),
         }
-    }
-}
-
-impl Deref for ThemeBorderType {
-    type Target = BorderType;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 

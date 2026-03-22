@@ -29,11 +29,13 @@ impl Widget for &mut App {
 impl App {
     /// Render normal screen
     fn render_screen_normal(&mut self, area: Rect, buf: &mut Buffer) {
+        let (fill_factor_list, fill_factor_content) = self.theme.fill_factors();
+
         let [top_bar_area, list_area, middle_bar_area, content_area] = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Fill(1),
+            Constraint::Fill(fill_factor_list),
             Constraint::Length(1),
-            Constraint::Fill(1), // TODO: make fill factors configurable, content is more important than list
+            Constraint::Fill(fill_factor_content),
         ])
         .areas(area);
 
@@ -60,7 +62,7 @@ impl App {
     /// - `View::Diff`: nothing
     /// - `View::Sync*`: shortcut keys for view with highlight of active view
     fn render_screen_normal_top_bar(&self, area: Rect, buf: &mut Buffer) {
-        let style = &self.theme.main.bars;
+        let bar_style = self.theme.bar_style();
 
         let title = if self.view.is_diff() {
             " dir-diff "
@@ -76,9 +78,7 @@ impl App {
         .areas(area);
 
         // middle
-        Line::from(Span::styled(title, &self.theme.main.title))
-            .style(style)
-            .render(middle_area, buf);
+        Line::styled(title, self.theme.bar_title_style()).render(middle_area, buf);
 
         // left side
         let left_str = match self.view {
@@ -100,7 +100,7 @@ impl App {
         } else {
             left_str.into()
         };
-        Line::styled(left_str, style)
+        Line::styled(left_str, bar_style)
             .left_aligned()
             .render(left_area, buf);
 
@@ -113,24 +113,27 @@ impl App {
             ]
             .into_iter()
             .flat_map(|(view, key, desc)| {
-                let style = if view == self.view {
-                    &self.theme.main.active_view
+                let view_style = if view == self.view {
+                    self.theme.bar_active_view_style()
                 } else {
-                    &self.theme.main.bars
+                    bar_style
                 };
                 [
                     Span::from(" "),
-                    Span::styled(" ", style),
-                    Span::styled(key, Style::from(style).patch(&self.theme.main.key_stroke)),
-                    Span::styled(" ", style),
-                    Span::styled(desc, style),
-                    Span::styled(" ", style),
+                    Span::styled(" ", view_style),
+                    Span::styled(
+                        key,
+                        view_style.patch(self.theme.bar_key_stroke_style_patch()),
+                    ),
+                    Span::styled(" ", view_style),
+                    Span::styled(desc, view_style),
+                    Span::styled(" ", view_style),
                 ]
                 .into_iter()
             })
             .collect::<Vec<_>>();
             Line::from(spans)
-                .style(style)
+                .style(bar_style)
                 .right_aligned()
                 .render(right_area, buf);
         }
@@ -147,9 +150,9 @@ impl App {
 
             for (i, row) in std::iter::zip(context.diff_list.view_range(), area.rows()) {
                 let style = if i == context.diff_list.selected {
-                    Style::default().reversed()
+                    self.theme.main_selected_item_style()
                 } else {
-                    Style::default()
+                    self.theme.content_style()
                 };
                 Line::styled(i.to_string(), style).render(row, buf);
             }
@@ -160,11 +163,10 @@ impl App {
     ///
     /// Name of each tree on top of its content area
     fn render_screen_normal_middle_bar(&self, area: Rect, buf: &mut Buffer) {
+        let bar_style = self.theme.bar_style();
         let areas = self.split_area_per_tree(area, buf);
         std::iter::zip(areas.iter(), self.arg.dirs.iter()).for_each(|(area, dir)| {
-            Line::styled(dir, &self.theme.main.bars)
-                .centered()
-                .render(*area, buf);
+            Line::styled(dir, bar_style).centered().render(*area, buf);
         });
     }
 
@@ -182,6 +184,7 @@ impl App {
     ///
     /// Fill spacers with bar style
     fn split_area_per_tree(&self, area: Rect, buf: &mut Buffer) -> Rc<[Rect]> {
+        let bar_style = self.theme.bar_style();
         let (areas, spacers) =
             Layout::horizontal(std::iter::repeat_n(Constraint::Fill(1), self.nb_trees()))
                 .spacing(1)
@@ -189,7 +192,7 @@ impl App {
 
         // fill spacers with bar style
         for spacer in spacers.iter() {
-            buf.set_style(*spacer, &self.theme.main.bars);
+            buf.set_style(*spacer, bar_style);
         }
         areas
     }
@@ -220,9 +223,9 @@ impl App {
         // render help area
         Clear.render(help_area, buf);
         let help_block = Block::bordered()
-            .border_style(&self.theme.help.border_style)
-            .border_type(*self.theme.help.border_type)
-            .style(&self.theme.help.content)
+            .border_style(self.theme.help_border_style())
+            .border_type(self.theme.help_border_type())
+            .style(self.theme.content_style())
             .title(" Help ")
             .title_bottom(Line::from(" Any key to exit help screen ").right_aligned());
         let help_paragraph = Paragraph::new(self.format_help(&help.content)).block(help_block);
@@ -258,9 +261,9 @@ impl App {
         // render dialog area
         Clear.render(dialog_area, buf);
         let dialog_block = Block::bordered()
-            .border_style(&self.theme.confirm_exit.border_style)
-            .border_type(*self.theme.confirm_exit.border_type)
-            .style(&self.theme.confirm_exit.content)
+            .border_style(self.theme.confirm_exit_border_style())
+            .border_type(self.theme.confirm_exit_border_type())
+            .style(self.theme.content_style())
             .padding(Padding::uniform(1))
             .title(" Exit ? ")
             .title_bottom(Self::format_button(button_sync).left_aligned())
@@ -313,8 +316,8 @@ impl App {
             Effect::None => Style::default(),
             Effect::Bold => Style::default().add_modifier(Modifier::BOLD),
             Effect::Italic => Style::default().add_modifier(Modifier::ITALIC),
-            Effect::Code => Style::from(&self.theme.help.content_key_stroke),
-            Effect::Highlight => Style::from(&self.theme.help.content_highlight),
+            Effect::Code => self.theme.help_key_stroke_style(),
+            Effect::Highlight => self.theme.help_highlight_style(),
         };
         Span::styled(txt.text.as_str(), style)
     }
