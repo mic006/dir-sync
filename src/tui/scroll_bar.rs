@@ -43,13 +43,9 @@ impl ScrollBar {
         view_start: usize,     // index of first visible item
         view_length: usize,    // number of visible items
         content_length: usize, // number of items in the collection
-    ) -> Self {
+    ) -> Option<Self> {
         // using octants characters, the scroll bar uses 4 sub-blocks per line
         Self::calc(view_start, view_length, content_length, 4 * view_length)
-    }
-
-    pub fn iter(&self) -> Self {
-        self.clone()
     }
 
     fn calc(
@@ -57,10 +53,10 @@ impl ScrollBar {
         view_length: usize,    // number of visible items
         content_length: usize, // number of items in the collection
         sb_max_length: usize,  // maximum length of scroll bar
-    ) -> Self {
+    ) -> Option<Self> {
         if view_length >= content_length {
             // no scroll bar
-            return Self::default();
+            return None;
         }
 
         let mut length = rounded_div(view_length * sb_max_length, content_length);
@@ -88,7 +84,7 @@ impl ScrollBar {
             start = start.min(sb_max_length - length - 1);
         }
 
-        Self { start, length }
+        Some(Self { start, length })
     }
 }
 
@@ -135,8 +131,8 @@ mod tests {
 
     #[test]
     fn test_calc_no_scroll() {
-        assert_eq!(ScrollBar::calc(0, 10, 10, 100), ScrollBar::default());
-        assert_eq!(ScrollBar::calc(0, 20, 10, 100), ScrollBar::default());
+        assert_eq!(ScrollBar::calc(0, 10, 10, 100), None);
+        assert_eq!(ScrollBar::calc(0, 20, 10, 100), None);
     }
 
     #[test]
@@ -145,26 +141,26 @@ mod tests {
         // length = 10*10/100 = 1.
         assert_eq!(
             ScrollBar::calc(0, 10, 100, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 0,
                 length: 1
-            }
+            })
         );
         // middle
         assert_eq!(
             ScrollBar::calc(45, 10, 100, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 5,
                 length: 1
-            }
+            })
         );
         // end
         assert_eq!(
             ScrollBar::calc(90, 10, 100, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 9,
                 length: 1
-            }
+            })
         );
     }
 
@@ -175,10 +171,10 @@ mod tests {
         // adjustment: not start -> max(1) -> 1.
         assert_eq!(
             ScrollBar::calc(1, 10, 1000, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 1,
                 length: 1
-            }
+            })
         );
     }
 
@@ -191,10 +187,10 @@ mod tests {
         // max valid start if not end = 10 - 1 - 1 = 8.
         assert_eq!(
             ScrollBar::calc(989, 10, 1000, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 8,
                 length: 1
-            }
+            })
         );
     }
 
@@ -205,10 +201,10 @@ mod tests {
         // max length allowed: 10 - 2 = 8.
         assert_eq!(
             ScrollBar::calc(0, 50, 100, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 0,
                 length: 5
-            }
+            })
         );
     }
 
@@ -222,20 +218,20 @@ mod tests {
         //   not_end adjustment: start.min(10-9-1=0) -> 0.
         assert_eq!(
             ScrollBar::calc(0, 99, 100, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 0,
                 length: 9
-            }
+            })
         );
         // view_start = 1:
         //   raw_start = rounded_div(1*10, 100) = 0.
         //   not_start adjustment: start.max(1) -> 1.
         assert_eq!(
             ScrollBar::calc(1, 99, 100, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 1,
                 length: 9
-            }
+            })
         );
     }
 
@@ -249,10 +245,10 @@ mod tests {
         //   not_end adjustment: start.min(10-8-1=1) -> 0.
         assert_eq!(
             ScrollBar::calc(0, 98, 100, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 0,
                 length: 8
-            }
+            })
         );
         // view_start = 1:
         //   raw_start = 0.
@@ -260,20 +256,20 @@ mod tests {
         //   not_end adjustment: start.min(1) -> 1.
         assert_eq!(
             ScrollBar::calc(1, 98, 100, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 1,
                 length: 8
-            }
+            })
         );
         // view_start = 2:
         //   raw_start = 0.
         //   start.max(1) -> 1.
         assert_eq!(
             ScrollBar::calc(2, 98, 100, 10),
-            ScrollBar {
+            Some(ScrollBar {
                 start: 2,
                 length: 8
-            }
+            })
         );
     }
 

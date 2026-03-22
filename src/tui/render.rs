@@ -148,6 +148,7 @@ impl App {
         if let Some(context) = &mut self.context {
             context.diff_list.normalize(area.height.into());
 
+            // render content
             for (i, row) in std::iter::zip(context.diff_list.view_range(), area.rows()) {
                 let style = if i == context.diff_list.selected {
                     self.theme.main_selected_item_style()
@@ -155,6 +156,17 @@ impl App {
                     self.theme.content_style()
                 };
                 Line::styled(i.to_string(), style).render(row, buf);
+            }
+
+            // render scroll bar on top of content
+            if let Some(scroll) = context.diff_list.scroll_bar() {
+                // render scroll bar
+                let sb_style = self.theme.main_scroll_bar_style();
+                for (i, c) in scroll {
+                    buf[(area.right() - 1, area.y + i as u16)]
+                        .set_style(sb_style)
+                        .set_char(c);
+                }
             }
         }
     }

@@ -2,6 +2,8 @@
 
 use std::ops::Range;
 
+use super::scroll_bar::ScrollBar;
+
 /// Movement event
 pub enum ListPanelMove {
     Start,
@@ -74,6 +76,11 @@ impl ListPanel {
     /// Get range of visible items
     pub fn view_range(&self) -> Range<usize> {
         self.view_start..(self.view_start + self.view_length).min(self.content_length)
+    }
+
+    /// Get scroll bar for the panel, if needed
+    pub fn scroll_bar(&self) -> Option<ScrollBar> {
+        ScrollBar::new(self.view_start, self.view_length, self.content_length)
     }
 
     /// Get max value of `view_start`
@@ -165,6 +172,11 @@ impl ListPanelSelection {
     /// Get range of visible items
     pub fn view_range(&self) -> Range<usize> {
         self.view_start..(self.view_start + self.view_length).min(self.content_length)
+    }
+
+    /// Get scroll bar for the panel, if needed
+    pub fn scroll_bar(&self) -> Option<ScrollBar> {
+        ScrollBar::new(self.view_start, self.view_length, self.content_length)
     }
 
     /// Get max value of `selected`
