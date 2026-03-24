@@ -164,7 +164,27 @@ impl App {
                     _ => unreachable!("context is invalid for the unhandled views"),
                 };
                 let diff_entry = &context.diffs[index];
-                Line::styled(format!("{diff_entry:#}"), style).render(row, buf);
+                let spans = match self.view {
+                    View::Diff => {
+                        vec![Span::from(format!("{diff_entry}"))]
+                    }
+                    View::SyncAll | View::SyncConflicts | View::SyncResolved => {
+                        vec![
+                            Span::from("["),
+                            if let Some(sync_source_index) = &diff_entry.sync_source_index {
+                                Span::styled(
+                                    (sync_source_index + 1).to_string(),
+                                    self.theme.main_sync_resolved_style_patch(),
+                                )
+                            } else {
+                                Span::styled("!", self.theme.main_sync_conflict_style_patch())
+                            },
+                            Span::from(format!("] {diff_entry:}")),
+                        ]
+                    }
+                    _ => unreachable!("context is invalid for the unhandled views"),
+                };
+                Line::from(spans).style(style).render(row, buf);
             }
 
             // render scroll bar on top of content

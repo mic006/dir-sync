@@ -87,6 +87,18 @@ impl AppTheme {
             .patch(Style::from(&self.main.scroll_bar))
     }
 
+    /// Get highlight sync action in diff list style patch
+    #[must_use]
+    pub fn main_sync_resolved_style_patch(&self) -> Style {
+        Style::from(&self.main.sync_resolved)
+    }
+
+    /// Get highlight sync conflict in diff list style patch
+    #[must_use]
+    pub fn main_sync_conflict_style_patch(&self) -> Style {
+        Style::from(&self.main.sync_conflict)
+    }
+
     /// Get border style for help screen
     #[must_use]
     pub fn help_border_style(&self) -> Style {
@@ -155,6 +167,10 @@ pub struct AppBarTheme {
 pub struct AppMainTheme {
     selected_item: ThemeStyle,
     scroll_bar: ThemeStyle,
+    /// Highlight sync action in diff list
+    sync_resolved: ThemeStyle,
+    /// Highlight sync conflict in diff list
+    sync_conflict: ThemeStyle,
 }
 
 /// Theme for Help screen

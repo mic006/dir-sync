@@ -28,9 +28,18 @@ bar:
 
 main:
   selected_item:
+    fg: "#E3E3E3" # md.ref.palette.grey90
     bg: "#001944" # md.ref.palette.blue10
   scroll_bar:
     fg: "#3271EA" # md.ref.palette.blue50
+  # highlight sync action in diff list
+  sync_resolved:
+    fg: "#80DA88" # md.ref.palette.green80
+    effect: bold
+  # highlight sync conflict in diff list
+  sync_conflict:
+    fg: "#FF8983" # md.ref.palette.red70
+    effect: bold
 
 help:
   border_style:
