@@ -105,7 +105,9 @@ impl App {
             .render(left_area, buf);
 
         // right side
-        if !self.view.is_diff() {
+        if self.view.is_diff() {
+            buf.set_style(right_area, bar_style);
+        } else {
             let spans = [
                 (View::SyncAll, "F5", "All diff"),
                 (View::SyncConflicts, "F6", "Conflicts"),
