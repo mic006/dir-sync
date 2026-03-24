@@ -90,12 +90,12 @@ impl App {
             View::Syncing => "Synchronizing directories…",
         };
         let left_str = if let Some(context) = &self.context {
-            let view_range = context.diff_list.view_range();
+            let view_range = context.list_panel.view_range();
             format!(
                 "{left_str} [{}-{}/{}]",
                 view_range.start + 1, // human count, 1-based display
                 view_range.end,
-                context.diff_list.content_length
+                context.list_panel.content_length
             )
         } else {
             left_str.into()
@@ -146,20 +146,27 @@ impl App {
     /// - display scroll bar
     fn render_screen_normal_list(&mut self, area: Rect, buf: &mut Buffer) {
         if let Some(context) = &mut self.context {
-            context.diff_list.normalize(area.height.into());
+            context.list_panel.normalize(area.height.into());
 
             // render content
-            for (i, row) in std::iter::zip(context.diff_list.view_range(), area.rows()) {
-                let style = if i == context.diff_list.selected {
+            for (i, row) in std::iter::zip(context.list_panel.view_range(), area.rows()) {
+                let style = if i == context.list_panel.selected {
                     self.theme.main_selected_item_style()
                 } else {
                     self.theme.content_style()
                 };
-                Line::styled(i.to_string(), style).render(row, buf);
+                let index = match self.view {
+                    View::Diff | View::SyncAll => i,
+                    View::SyncConflicts => context.conflicts_indexes[i],
+                    View::SyncResolved => context.resolved_indexes[i],
+                    _ => unreachable!("context is invalid for the unhandled views"),
+                };
+                let diff_entry = &context.diffs[index];
+                Line::styled(format!("{diff_entry:#}"), style).render(row, buf);
             }
 
             // render scroll bar on top of content
-            if let Some(scroll) = context.diff_list.scroll_bar() {
+            if let Some(scroll) = context.list_panel.scroll_bar() {
                 // render scroll bar
                 let sb_style = self.theme.main_scroll_bar_style();
                 for (i, c) in scroll {

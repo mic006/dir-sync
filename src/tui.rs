@@ -109,9 +109,37 @@ struct InitContext {
 /// Application runtime context (displaying diffs)
 struct Context {
     run_ctx: RunContext,
+    /// List of diffs, with sync action
     diffs: Vec<DiffEntry>,
     /// Diff list panel
-    diff_list: ListPanelSelection,
+    list_panel: ListPanelSelection,
+    /// List of index of `diffs` entries which have no sync action
+    conflicts_indexes: Vec<usize>,
+    /// List of index of `diffs` entries which have a sync action
+    resolved_indexes: Vec<usize>,
+}
+impl Context {
+    fn new(ctx: InitContext) -> Self {
+        let list_panel = ListPanelSelection::new(ctx.diffs.len());
+        let mut conflicts_indexes = Vec::with_capacity(ctx.diffs.len());
+        let mut resolved_indexes = Vec::with_capacity(ctx.diffs.len());
+
+        for (i, diff) in ctx.diffs.iter().enumerate() {
+            if diff.sync_source_index.is_none() {
+                conflicts_indexes.push(i);
+            } else {
+                resolved_indexes.push(i);
+            }
+        }
+
+        Self {
+            run_ctx: ctx.run_ctx,
+            diffs: ctx.diffs,
+            list_panel,
+            conflicts_indexes,
+            resolved_indexes,
+        }
+    }
 }
 
 /// Terminal UI application
@@ -280,14 +308,7 @@ impl App {
         match event {
             AppTaskEvent::InitContext(context) => {
                 let no_diff = context.diffs.is_empty();
-                // TODO: let diff_list = ListPanelSelection::new(context.diffs.len());
-                let diff_list =
-                    ListPanelSelection::new(10_usize.pow(self.arg.dirs.len() as u32 - 1));
-                self.context = Some(Context {
-                    run_ctx: context.run_ctx,
-                    diffs: context.diffs,
-                    diff_list,
-                });
+                self.context = Some(Context::new(context));
                 if no_diff {
                     if !self.arg.read_only {
                         self.sync_done = true;
@@ -410,7 +431,7 @@ impl App {
     /// Manage navigation keys for diff list
     fn handle_key_diff_nav(&mut self, event: ListPanelMove) {
         if let Some(context) = &mut self.context {
-            context.diff_list.handle(event);
+            context.list_panel.handle(event);
             self.redraw = true;
         }
     }
@@ -425,6 +446,20 @@ impl App {
     fn set_view(&mut self, view: View) {
         if view != self.view {
             self.view = view;
+            if let Some(context) = &mut self.context {
+                match view {
+                    View::Diff | View::SyncAll => {
+                        context.list_panel.reset(context.diffs.len());
+                    }
+                    View::SyncConflicts => {
+                        context.list_panel.reset(context.conflicts_indexes.len());
+                    }
+                    View::SyncResolved => {
+                        context.list_panel.reset(context.resolved_indexes.len());
+                    }
+                    _ => {} // ignored view
+                }
+            }
             self.redraw = true;
         }
     }
