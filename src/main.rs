@@ -27,6 +27,7 @@ use crate::tui::async_main_tui;
 pub mod config;
 pub mod diff;
 pub mod generic {
+    pub mod bitmap_categ;
     pub mod config {
         pub mod field_mem_size;
     }
