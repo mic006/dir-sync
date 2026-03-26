@@ -8,30 +8,30 @@ fill_factor_content: 3
 
 # default style for all content
 content:
-  fg: "#ABABAB" # md.ref.palette.grey70
+  fg: "#BDBDBD" # md2.gray.400
   bg: "#000000"
 
 bar:
   # base style for bars, headers, separators
   base:
     fg: "#FFFFFF"
-    bg: "#04409F" # md.ref.palette.blue30
+    bg: "#0277BD" # md2.light_blue.800
   # main title style
   title:
     effect: bold
   # style for key strokes
   key_stroke:
-    fg: "#FFE07C" # md.ref.palette.yellow90
+    fg: "#FFD54F" # md2.amber.300
   # style for active view (F5/F6/F7)
   active_view:
-    bg: "#1157CE" # md.ref.palette.blue40
+    bg: "#039BE5" # md2.light_blue.600
 
 main:
   selected_item:
-    fg: "#E3E3E3" # md.ref.palette.grey90
-    bg: "#001944" # md.ref.palette.blue10
+    fg: "#EEEEEE" # md2.gray.200
+    bg: "#01579B" # md2.light_blue.900
   scroll_bar:
-    fg: "#3271EA" # md.ref.palette.blue50
+    fg: "#0288D1" # md2.light_blue.700
   # highlight sync action in diff list
   sync_resolved:
     fg: "#00E676" # md2.green.A400
@@ -43,16 +43,16 @@ main:
 
 help:
   border_style:
-    fg: "#FF8D41" # md.ref.palette.orange70
+    fg: "#FF9800" # md2.orange.500
     bg: "#000000"
   border_type: rounded
   key_stroke:
-    fg: "#FFE07C" # md.ref.palette.yellow90
+    fg: "#FFD54F" # md2.amber.300
   highlight:
     fg: "#FFFFFF"
 
 confirm_exit:
   border_style:
-    fg: "#FF8D41" # md.ref.palette.orange70
+    fg: "#FF9800" # md2.orange.500
     bg: "#000000"
   border_type: rounded

@@ -205,9 +205,13 @@ impl App {
     fn render_screen_normal_middle_bar(&self, area: Rect, buf: &mut Buffer) {
         let bar_style = self.theme.bar_style();
         let areas = self.split_area_per_tree(area, buf);
-        std::iter::zip(areas.iter(), self.arg.dirs.iter()).for_each(|(area, dir)| {
-            Line::styled(dir, bar_style).centered().render(*area, buf);
-        });
+        std::iter::zip(areas.iter(), self.arg.dirs.iter())
+            .enumerate()
+            .for_each(|(i, (area, dir))| {
+                Line::styled(format!("#{} {dir}", i + 1), bar_style)
+                    .centered()
+                    .render(*area, buf);
+            });
     }
 
     /// Render content of each tree on normal screen
