@@ -119,6 +119,14 @@ impl ListPanelSelection {
         self.content_length = content_length;
     }
 
+    /// Adjust content length, and ensure selected remains valid
+    ///
+    /// Note: `normalize()` shall be called afterwards to ensure the selected item is within the view
+    pub fn adjust_content_length(&mut self, content_length: usize) {
+        self.content_length = content_length;
+        self.selected = self.selected.min(self.content_length.saturating_sub(1));
+    }
+
     /// Update based on move event
     ///
     /// Note: `normalize()` shall be called afterwards to ensure the selected item is within the view

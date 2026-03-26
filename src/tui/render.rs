@@ -91,12 +91,16 @@ impl App {
         };
         let left_str = if let Some(context) = &self.context {
             let view_range = context.list_panel.view_range();
-            format!(
-                "{left_str} [{}-{}/{}]",
-                view_range.start + 1, // human count, 1-based display
-                view_range.end,
-                context.list_panel.content_length
-            )
+            if context.list_panel.content_length == 0 {
+                format!("{left_str} [0/0]")
+            } else {
+                format!(
+                    "{left_str} [{}-{}/{}]",
+                    view_range.start + 1, // human count, 1-based display
+                    view_range.end,
+                    context.list_panel.content_length
+                )
+            }
         } else {
             left_str.into()
         };
@@ -157,12 +161,7 @@ impl App {
                 } else {
                     self.theme.content_style()
                 };
-                let index = match self.view {
-                    View::Diff | View::SyncAll => i,
-                    View::SyncConflicts => context.conflicts_indexes[i],
-                    View::SyncResolved => context.resolved_indexes[i],
-                    _ => unreachable!("context is invalid for the unhandled views"),
-                };
+                let index = context.get_diff_entry_index(self.view, i);
                 let diff_entry = &context.diffs[index];
                 let spans = match self.view {
                     View::Diff => {
@@ -364,7 +363,7 @@ impl App {
     }
 
     /// Number of trees to be displayed
-    fn nb_trees(&self) -> usize {
+    pub fn nb_trees(&self) -> usize {
         self.arg.dirs.len()
     }
 }

@@ -140,6 +140,73 @@ impl Context {
             resolved_indexes,
         }
     }
+
+    /// Get diff entry index for current view
+    fn get_diff_entry_index(&self, view: View, view_index: usize) -> usize {
+        match view {
+            View::Diff | View::SyncAll => view_index,
+            View::SyncConflicts => self.conflicts_indexes[view_index],
+            View::SyncResolved => self.resolved_indexes[view_index],
+            _ => unreachable!("context is invalid for the unhandled views"),
+        }
+    }
+
+    /// Get diff entry index for selected item in current view
+    fn get_diff_entry_index_selected(&self, view: View) -> usize {
+        let view_index = self.list_panel.selected;
+        self.get_diff_entry_index(view, view_index)
+    }
+
+    /// Adjust selected item in list panel if needed
+    fn adjust_selected(&mut self, view: View) {
+        let list = match view {
+            View::Diff | View::SyncAll => return,
+            View::SyncConflicts => &self.conflicts_indexes,
+            View::SyncResolved => &self.resolved_indexes,
+            _ => unreachable!("context is invalid for the unhandled views"),
+        };
+        self.list_panel.adjust_content_length(list.len());
+    }
+
+    /// Manage digit keys to choose sync action
+    fn handle_key_sync_action(&mut self, key: usize, view: View) {
+        let index = self.get_diff_entry_index_selected(view);
+        let diff_entry = &mut self.diffs[index];
+
+        if diff_entry.sync_source_index.is_none() {
+            if key != 0 {
+                // defining sync action
+                diff_entry.sync_source_index = Some((key - 1) as u8);
+                // update lists
+                Self::remove_index(&mut self.conflicts_indexes, index);
+                Self::add_index(&mut self.resolved_indexes, index);
+                self.adjust_selected(view);
+            }
+            // else: no sync action, nothing to do
+        } else if key == 0 {
+            // removing sync action
+            diff_entry.sync_source_index = None;
+            Self::add_index(&mut self.conflicts_indexes, index);
+            Self::remove_index(&mut self.resolved_indexes, index);
+            // update lists
+            self.adjust_selected(view);
+        } else {
+            // modifying the sync action
+            diff_entry.sync_source_index = Some((key - 1) as u8);
+        }
+    }
+
+    /// Remove index from ordered list
+    fn remove_index(list: &mut Vec<usize>, index: usize) {
+        let idx = list.binary_search(&index).unwrap();
+        list.remove(idx);
+    }
+
+    /// Add index to ordered list
+    fn add_index(list: &mut Vec<usize>, index: usize) {
+        let idx = list.binary_search(&index).unwrap_err();
+        list.insert(idx, index);
+    }
 }
 
 /// Terminal UI application
@@ -424,6 +491,11 @@ impl App {
             KeyCode::PageDown => self.handle_key_diff_nav(ListPanelMove::PageDown),
             KeyCode::Up => self.handle_key_diff_nav(ListPanelMove::LineUp),
             KeyCode::Down => self.handle_key_diff_nav(ListPanelMove::LineDown),
+            KeyCode::Char(c)
+                if c.is_ascii_digit() && self.view.are_diffs_rendered() && !self.view.is_diff() =>
+            {
+                self.handle_key_sync_action(c.to_digit(10).unwrap() as usize);
+            }
             _ => (), // ignored key
         }
     }
@@ -432,6 +504,19 @@ impl App {
     fn handle_key_diff_nav(&mut self, event: ListPanelMove) {
         if let Some(context) = &mut self.context {
             context.list_panel.handle(event);
+            self.redraw = true;
+        }
+    }
+
+    /// Manage digit keys to choose sync action
+    fn handle_key_sync_action(&mut self, key: usize) {
+        if key > self.nb_trees() {
+            // invalid key, ignore
+            return;
+        }
+
+        if let Some(context) = &mut self.context {
+            context.handle_key_sync_action(key, self.view);
             self.redraw = true;
         }
     }
