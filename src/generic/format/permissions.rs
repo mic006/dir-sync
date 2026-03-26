@@ -6,7 +6,6 @@ use crate::proto::{MyDirEntry, Specific};
 #[must_use]
 pub fn format_file_type_and_permissions(entry: &MyDirEntry) -> String {
     let mut res = vec![0u8; 10];
-    //let mut res = String::with_capacity(10);
     res[0] = match &entry.specific {
         Some(Specific::Fifo(_)) => b'|',
         Some(Specific::Character(_)) => b'c',
