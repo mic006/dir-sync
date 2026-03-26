@@ -157,7 +157,7 @@ impl App {
             // render content
             for (i, row) in std::iter::zip(context.list_panel.view_range(), area.rows()) {
                 let style = if i == context.list_panel.selected {
-                    self.theme.main_selected_item_style()
+                    self.theme.diff_list_selected_item_style()
                 } else {
                     self.theme.content_style()
                 };
@@ -173,10 +173,10 @@ impl App {
                             if let Some(sync_source_index) = &diff_entry.sync_source_index {
                                 Span::styled(
                                     (sync_source_index + 1).to_string(),
-                                    self.theme.main_sync_resolved_style_patch(),
+                                    self.theme.diff_list_sync_resolved_style_patch(),
                                 )
                             } else {
-                                Span::styled("!", self.theme.main_sync_conflict_style_patch())
+                                Span::styled("!", self.theme.diff_list_sync_conflict_style_patch())
                             },
                             Span::from(format!("] {diff_entry:}")),
                         ]
@@ -189,7 +189,7 @@ impl App {
             // render scroll bar on top of content
             if let Some(scroll) = context.list_panel.scroll_bar() {
                 // render scroll bar
-                let sb_style = self.theme.main_scroll_bar_style();
+                let sb_style = self.theme.bar_scroll_bar_style();
                 for (i, c) in scroll {
                     buf[(area.right() - 1, area.y + i as u16)]
                         .set_style(sb_style)

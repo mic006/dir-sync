@@ -11,8 +11,7 @@ use ratatui::{
 use serde::{Deserialize, de::Error};
 
 /// App theme
-#[derive(Deserialize, Default, Debug, PartialEq)]
-#[serde(default)]
+#[derive(Deserialize, Debug, PartialEq)]
 pub struct AppTheme {
     /// Display height repartition between list of diff and content of one diff
     /// Ex: `fill_factor_list=1`, `fill_factor_content=3` allocates 1/4 for list and 3/4 for content
@@ -21,7 +20,8 @@ pub struct AppTheme {
     /// Default style for all content
     content: ThemeStyle,
     bar: AppBarTheme,
-    main: AppMainTheme,
+    diff_list: AppDiffListTheme,
+    diff_content: AppDiffContentTheme,
     help: AppHelpTheme,
     confirm_exit: AppConfirmExitTheme,
 }
@@ -73,30 +73,73 @@ impl AppTheme {
         self.bar_style().patch(Style::from(&self.bar.active_view))
     }
 
-    /// Get selected item style in main panes
-    #[must_use]
-    pub fn main_selected_item_style(&self) -> Style {
-        self.content_style()
-            .patch(Style::from(&self.main.selected_item))
-    }
-
     /// Get scroll bar style in main panes
     #[must_use]
-    pub fn main_scroll_bar_style(&self) -> Style {
+    pub fn bar_scroll_bar_style(&self) -> Style {
         self.content_style()
-            .patch(Style::from(&self.main.scroll_bar))
+            .patch(Style::from(&self.bar.scroll_bar))
+    }
+
+    /// Get selected item style in main panes
+    #[must_use]
+    pub fn diff_list_selected_item_style(&self) -> Style {
+        self.content_style()
+            .patch(Style::from(&self.diff_list.selected_item))
     }
 
     /// Get highlight sync action in diff list style patch
     #[must_use]
-    pub fn main_sync_resolved_style_patch(&self) -> Style {
-        Style::from(&self.main.sync_resolved)
+    pub fn diff_list_sync_resolved_style_patch(&self) -> Style {
+        Style::from(&self.diff_list.sync_resolved)
     }
 
     /// Get highlight sync conflict in diff list style patch
     #[must_use]
-    pub fn main_sync_conflict_style_patch(&self) -> Style {
-        Style::from(&self.main.sync_conflict)
+    pub fn diff_list_sync_conflict_style_patch(&self) -> Style {
+        Style::from(&self.diff_list.sync_conflict)
+    }
+
+    /// Get old content base style
+    #[must_use]
+    pub fn diff_content_old_base_style(&self) -> Style {
+        self.content_style().bg(self.diff_content.old_bg.0)
+    }
+
+    /// Get new content base style
+    #[must_use]
+    pub fn diff_content_new_base_style(&self) -> Style {
+        self.content_style().bg(self.diff_content.new_bg.0)
+    }
+
+    /// Get conflict content base style
+    #[must_use]
+    pub fn diff_content_conflict_base_style(&self) -> Style {
+        self.content_style().bg(self.diff_content.conflict_bg.0)
+    }
+
+    /// Get old content highlight style patch
+    #[must_use]
+    pub fn diff_content_old_highlight_style_patch(&self) -> Style {
+        Style::new().fg(self.diff_content.old_fg.0)
+    }
+
+    /// Get new content highlight style patch
+    #[must_use]
+    pub fn diff_content_new_highlight_style_patch(&self) -> Style {
+        Style::new().fg(self.diff_content.new_fg.0)
+    }
+
+    /// Get conflict content highlight style patch
+    #[must_use]
+    pub fn diff_content_conflict_highlight_style_patch(&self) -> Style {
+        Style::new().fg(self.diff_content.conflict_fg.0)
+    }
+
+    /// Get line number style
+    #[must_use]
+    pub fn diff_content_line_num_style(&self) -> Style {
+        self.content_style()
+            .patch(Style::from(&self.diff_content.line_num))
     }
 
     /// Get border style for help screen
@@ -150,7 +193,7 @@ impl FromStr for AppTheme {
 /// Theme for Bars, headers...
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
-pub struct AppBarTheme {
+struct AppBarTheme {
     /// Base style for bars, headers, separators
     base: ThemeStyle,
     /// Main title style
@@ -159,24 +202,36 @@ pub struct AppBarTheme {
     key_stroke: ThemeStyle,
     /// Style for active view (F5/F6/F7)
     active_view: ThemeStyle,
+    scroll_bar: ThemeStyle,
 }
 
-/// Theme for Main screen
+/// Theme for Main screen, Diff list pane
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
-pub struct AppMainTheme {
+struct AppDiffListTheme {
     selected_item: ThemeStyle,
-    scroll_bar: ThemeStyle,
     /// Highlight sync action in diff list
     sync_resolved: ThemeStyle,
     /// Highlight sync conflict in diff list
     sync_conflict: ThemeStyle,
 }
 
+/// Theme for Main screen, Diff content pane
+#[derive(Deserialize, Debug, PartialEq)]
+struct AppDiffContentTheme {
+    old_fg: ThemeColor,
+    old_bg: ThemeColor,
+    new_fg: ThemeColor,
+    new_bg: ThemeColor,
+    conflict_fg: ThemeColor,
+    conflict_bg: ThemeColor,
+    line_num: ThemeStyle,
+}
+
 /// Theme for Help screen
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
-pub struct AppHelpTheme {
+struct AppHelpTheme {
     border_style: ThemeStyle,
     border_type: ThemeBorderType,
     /// Style for key strokes
@@ -188,14 +243,14 @@ pub struct AppHelpTheme {
 /// Theme for `ConfirmExit` dialog box
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
-pub struct AppConfirmExitTheme {
+struct AppConfirmExitTheme {
     border_style: ThemeStyle,
     border_type: ThemeBorderType,
 }
 
 /// Style
 #[derive(Deserialize, Default, Debug, PartialEq)]
-pub struct ThemeStyle {
+struct ThemeStyle {
     /// Foreground color
     fg: Option<ThemeColor>,
     /// Background color
@@ -222,7 +277,7 @@ impl From<&ThemeStyle> for Style {
 
 /// Color
 #[derive(Debug, PartialEq)]
-pub struct ThemeColor(Color);
+struct ThemeColor(Color);
 
 impl<'de> Deserialize<'de> for ThemeColor {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -255,7 +310,7 @@ impl FromStr for ThemeColor {
 
 /// Text effect
 #[derive(Debug, PartialEq)]
-pub struct TextEffect(Modifier);
+struct TextEffect(Modifier);
 
 impl<'de> Deserialize<'de> for TextEffect {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -294,7 +349,7 @@ impl FromStr for TextEffect {
 
 /// Border type
 #[derive(Default, Debug, PartialEq)]
-pub struct ThemeBorderType(BorderType);
+struct ThemeBorderType(BorderType);
 
 impl<'de> Deserialize<'de> for ThemeBorderType {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>

@@ -9,12 +9,12 @@ fill_factor_content: 3
 # default style for all content
 content:
   fg: "#BDBDBD" # md2.gray.400
-  bg: "#000000"
+  bg: "#000000" # black
 
 bar:
   # base style for bars, headers, separators
   base:
-    fg: "#FFFFFF"
+    fg: "#FFFFFF" # white
     bg: "#0277BD" # md2.light_blue.800
   # main title style
   title:
@@ -25,13 +25,13 @@ bar:
   # style for active view (F5/F6/F7)
   active_view:
     bg: "#039BE5" # md2.light_blue.600
+  scroll_bar:
+    fg: "#0288D1" # md2.light_blue.700
 
-main:
+diff_list:
   selected_item:
     fg: "#EEEEEE" # md2.gray.200
     bg: "#01579B" # md2.light_blue.900
-  scroll_bar:
-    fg: "#0288D1" # md2.light_blue.700
   # highlight sync action in diff list
   sync_resolved:
     fg: "#00E676" # md2.green.A400
@@ -41,18 +41,28 @@ main:
     fg: "#E040FB" # md2.purple.A200
     effect: bold
 
+diff_content:
+  old_fg: "#E57373" # md2.red.300
+  old_bg: "#3e0909"
+  new_fg: "#81C784" # md2.green.300
+  new_bg: "#123e15"
+  conflict_fg: "#BA68C8" # md2.purple.300
+  conflict_bg: "#21093e"
+  line_num:
+    effect: dim
+
 help:
   border_style:
     fg: "#FF9800" # md2.orange.500
-    bg: "#000000"
+    bg: "#000000" # black
   border_type: rounded
   key_stroke:
     fg: "#FFD54F" # md2.amber.300
   highlight:
-    fg: "#FFFFFF"
+    fg: "#FFFFFF" # white
 
 confirm_exit:
   border_style:
     fg: "#FF9800" # md2.orange.500
-    bg: "#000000"
+    bg: "#000000" # black
   border_type: rounded
