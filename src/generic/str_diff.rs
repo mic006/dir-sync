@@ -38,6 +38,13 @@ pub struct DiffChunk {
     pub kind: DiffChunkType,
     pub slice: StrSlice,
 }
+impl DiffChunk {
+    /// Get chunk type and substring from the original string
+    #[must_use]
+    fn get<'a>(&self, original: &'a str) -> (DiffChunkType, &'a str) {
+        (self.kind, self.slice.get(original))
+    }
+}
 
 /// Vector of difference chunks (one line with intra-line differences)
 #[derive(Debug, PartialEq, Default)]
@@ -52,59 +59,52 @@ impl DiffChunkVec {
             self.0.push(chunk);
         }
     }
+
+    /// Get iterator over chunks
+    pub fn chunks<'a>(&self, original: &'a str) -> impl Iterator<Item = (DiffChunkType, &'a str)> {
+        self.0.iter().map(|chunk| chunk.get(original))
+    }
 }
 
 /// Compared two ascii strings with same length, one char at a time
+///
+/// The output mask is applicable to both a input strings
 #[must_use]
-pub fn diff_fixed_ascii_str(a: &str, b: &str) -> (DiffChunkVec, DiffChunkVec) {
+pub fn diff_fixed_ascii_str(a: &str, b: &str) -> DiffChunkVec {
     assert_eq!(
         a.len(),
         b.len(),
         "the two strings must have the same length"
     );
 
-    let mut diff_a = DiffChunkVec::default();
-    let mut diff_b = DiffChunkVec::default();
+    let mut diff = DiffChunkVec::default();
 
     for (i, (a, b)) in std::iter::zip(a.chars(), b.chars()).enumerate() {
-        let chunk = DiffChunk {
-            kind: if a == b {
-                DiffChunkType::Common
-            } else {
-                DiffChunkType::Differ
-            },
+        let kind = if a == b {
+            DiffChunkType::Common
+        } else {
+            DiffChunkType::Differ
+        };
+        diff.append(DiffChunk {
+            kind,
             slice: StrSlice {
                 offset: i,
                 length: 1,
             },
-        };
-        diff_a.append(chunk);
-        diff_b.append(chunk);
+        });
     }
-    (diff_a, diff_b)
+    diff
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    impl DiffChunk {
-        fn debug<'a>(&self, original: &'a str) -> (DiffChunkType, &'a str) {
-            (self.kind, self.slice.get(original))
-        }
-    }
-
-    impl DiffChunkVec {
-        fn debug<'a>(&self, original: &'a str) -> Vec<(DiffChunkType, &'a str)> {
-            self.0.iter().map(|chunk| chunk.debug(original)).collect()
-        }
-    }
-
     #[test]
     fn test_diff_fixed_ascii_str() {
         let a = "drwxrwxr--";
         let b = "dr-xr--r--";
-        let (da, db) = diff_fixed_ascii_str(a, b);
+        let d = diff_fixed_ascii_str(a, b);
 
         // Comparison map:
         // d r w x r w x r - - (a)
@@ -118,7 +118,7 @@ mod tests {
             (DiffChunkType::Differ, "wx"),
             (DiffChunkType::Common, "r--"),
         ];
-        assert_eq!(da.debug(a), expected_a);
+        assert_eq!(d.chunks(a).collect::<Vec<_>>(), expected_a);
 
         let expected_b = vec![
             (DiffChunkType::Common, "dr"),
@@ -127,6 +127,6 @@ mod tests {
             (DiffChunkType::Differ, "--"),
             (DiffChunkType::Common, "r--"),
         ];
-        assert_eq!(db.debug(b), expected_b);
+        assert_eq!(d.chunks(b).collect::<Vec<_>>(), expected_b);
     }
 }
