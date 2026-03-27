@@ -91,6 +91,16 @@ pub fn diff_entries(a: &MyDirEntry, b: &MyDirEntry) -> DiffType {
     diff
 }
 
+/// Compare 2 optional entries and determine difference
+#[must_use]
+pub fn diff_entries_opt(a: Option<&MyDirEntry>, b: Option<&MyDirEntry>) -> DiffType {
+    match (a, b) {
+        (Some(a), Some(b)) => diff_entries(a, b),
+        (None, None) => DiffType::empty(),
+        _ => DiffType::TYPE,
+    }
+}
+
 /// Difference between input entries
 #[derive(Debug)]
 pub struct DiffEntry {

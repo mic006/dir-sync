@@ -1,5 +1,6 @@
 //! Use bitmap to split a set of indexed elements in two categories
 
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Categ {
     ZERO,
     ONE,
