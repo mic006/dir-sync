@@ -278,7 +278,7 @@ impl ActionCtx {
             if diff.contains(DiffType::PERMISSIONS) {
                 self.fs_tree.chmod(&req.rel_path, new.permissions)?;
             }
-            if diff.contains(DiffType::UID_GID) {
+            if diff.intersects(DiffType::OWNER | DiffType::GROUP) {
                 self.fs_tree.chown(&req.rel_path, new.uid, new.gid)?;
             }
             if !new.is_dir() && diff.contains(DiffType::MTIME) {

@@ -16,18 +16,20 @@ bitflags::bitflags! {
         /// content is different, files and symlinks only
         const CONTENT     = 1 << 1;
         const PERMISSIONS = 1 << 2;
-        const UID_GID     = 1 << 3;
+        const OWNER       = 1 << 3;
+        const GROUP       = 1 << 4;
         /// modification time; only for regular files and symlinks
-        const MTIME       = 1 << 4;
+        const MTIME       = 1 << 5;
     }
 }
 impl std::fmt::Display for DiffType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const ELEMS: [(DiffType, char); 5] = [
+        const ELEMS: [(DiffType, char); 6] = [
             (DiffType::TYPE, 't'),
             (DiffType::CONTENT, 'c'),
             (DiffType::PERMISSIONS, 'p'),
-            (DiffType::UID_GID, 'o'),
+            (DiffType::OWNER, 'o'),
+            (DiffType::GROUP, 'g'),
             (DiffType::MTIME, 'm'),
         ];
         for (d, c) in ELEMS {
@@ -81,8 +83,11 @@ pub fn diff_entries(a: &MyDirEntry, b: &MyDirEntry) -> DiffType {
     if a.permissions != b.permissions {
         diff.insert(DiffType::PERMISSIONS);
     }
-    if a.uid != b.uid || a.gid != b.gid {
-        diff.insert(DiffType::UID_GID);
+    if a.uid != b.uid {
+        diff.insert(DiffType::OWNER);
+    }
+    if a.gid != b.gid {
+        diff.insert(DiffType::GROUP);
     }
     if check_mtime && a.mtime != b.mtime {
         diff.insert(DiffType::MTIME);
@@ -401,12 +406,12 @@ mod tests {
         let mut a = create_file_entry("file.txt", 10, 100);
         a.uid = 1001;
         let b = create_file_entry("file.txt", 10, 100);
-        assert_eq!(diff_entries(&a, &b), DiffType::UID_GID);
+        assert_eq!(diff_entries(&a, &b), DiffType::OWNER);
 
         let mut a = create_file_entry("file.txt", 10, 100);
         a.gid = 1001;
         let b = create_file_entry("file.txt", 10, 100);
-        assert_eq!(diff_entries(&a, &b), DiffType::UID_GID);
+        assert_eq!(diff_entries(&a, &b), DiffType::GROUP);
     }
 
     #[test]
