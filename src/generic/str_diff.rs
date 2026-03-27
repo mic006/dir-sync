@@ -47,7 +47,7 @@ impl DiffChunk {
 }
 
 /// Vector of difference chunks (one line with intra-line differences)
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Clone)]
 pub struct DiffChunkVec(pub Vec<DiffChunk>);
 impl DiffChunkVec {
     fn append(&mut self, chunk: DiffChunk) {

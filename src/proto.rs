@@ -73,6 +73,9 @@ where
     /// Note: for directories, the specific field (content of the directory)
     /// is moved from the existing to the new entry
     fn create_or_update_entry(&mut self, rel_path: &str, entry: MyDirEntry) -> anyhow::Result<()>;
+
+    /// Get file type as string
+    fn type_as_str(&self) -> &'static str;
 }
 
 impl MyDirEntryExt for MyDirEntry {
@@ -202,6 +205,19 @@ impl MyDirEntryExt for MyDirEntry {
             }
         }
         Ok(())
+    }
+
+    fn type_as_str(&self) -> &'static str {
+        match &self.specific {
+            Some(Specific::Fifo(_)) => "Fifo",
+            Some(Specific::Character(_)) => "CharDev",
+            Some(Specific::Directory(_)) => "Directory",
+            Some(Specific::Block(_)) => "BlockDev",
+            Some(Specific::Regular(_)) => "Regular",
+            Some(Specific::Symlink(_)) => "Symlink",
+            Some(Specific::Socket(_)) => "Socket",
+            None => "Unknown",
+        }
     }
 }
 

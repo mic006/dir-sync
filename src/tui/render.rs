@@ -10,8 +10,19 @@ use ratatui::{
     widgets::{Block, Clear, Padding, Paragraph, Widget},
 };
 
+use crate::diff::{DiffEntry, DiffType};
+use crate::generic::format::size::format_file_size;
+use crate::proto::MyDirEntryExt;
+
+use super::diff_context::RenderDiffType;
 use super::rich_text::{Effect, RichSpan, RichText};
+use super::theme::AppTheme;
 use super::{App, View, help};
+
+const METADATA_LINE_TYPE_SIZE: usize = 0;
+const METADATA_LINE_MTIME: usize = 1;
+const METADATA_LINE_PERMISSIONS_OWNER_GROUP: usize = 2;
+const NB_METADATA_LINES: usize = 3;
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer)
@@ -220,8 +231,98 @@ impl App {
     /// - display content of the selected item for each tree
     /// - highlight differences between the trees
     /// - display scroll bar
-    fn render_screen_normal_content(&self, area: Rect, buf: &mut Buffer) {
-        let _areas = self.split_area_per_tree(area, buf);
+    fn render_screen_normal_content(&mut self, area: Rect, buf: &mut Buffer) {
+        let areas = self.split_area_per_tree(area, buf);
+        let nb_trees = self.nb_trees();
+        if let Some(context) = &mut self.context
+            && context.list_panel.content_length > 0
+        {
+            let index = context.get_diff_entry_index_selected(self.view);
+
+            for tree_index in 0..nb_trees {
+                let render_type = if self.view.is_diff() {
+                    context.get_render_type_mode_diff(index, tree_index)
+                } else {
+                    context.get_render_type_mode_sync(index, tree_index)
+                };
+                let diff_entry = &context.diffs[index];
+                let (diff_base_style, diff_highlight_style) =
+                    Self::get_render_styles(&self.theme, render_type);
+                let line = Self::get_content_line(
+                    diff_entry,
+                    diff_base_style,
+                    diff_highlight_style,
+                    tree_index,
+                    METADATA_LINE_TYPE_SIZE,
+                );
+                let row = areas[tree_index].rows().next().unwrap();
+                line.render(row, buf);
+            }
+        }
+    }
+
+    /// Get rendering styles based on render type
+    fn get_render_styles(theme: &AppTheme, render_type: RenderDiffType) -> (Style, Style) {
+        match render_type {
+            RenderDiffType::ConflictAlways | RenderDiffType::ConflictDiff => (
+                theme.diff_content_conflict_base_style(),
+                theme.diff_content_conflict_highlight_style_patch(),
+            ),
+            RenderDiffType::Old => (
+                theme.diff_content_old_base_style(),
+                theme.diff_content_old_highlight_style_patch(),
+            ),
+            RenderDiffType::New => (
+                theme.diff_content_new_base_style(),
+                theme.diff_content_new_highlight_style_patch(),
+            ),
+        }
+    }
+
+    /// Get one line of content, for one tree
+    ///
+    /// Handles metadata line vs content line
+    fn get_content_line(
+        //&self,
+        //render_type: RenderDiffType,
+        diff_entry: &DiffEntry,
+        diff_base_style: Style,
+        diff_highlight_style: Style,
+        tree_index: usize,
+        line_index: usize,
+        //area: Rect,
+        //buf: &mut Buffer,
+    ) -> Line<'_> {
+        let entry = diff_entry.entries[tree_index].as_ref();
+        let line = match line_index {
+            METADATA_LINE_TYPE_SIZE => {
+                if let Some(entry) = entry {
+                    let mut file_type = Span::from(entry.type_as_str());
+                    if diff_entry.diff.contains(DiffType::TYPE) {
+                        file_type = file_type.style(diff_highlight_style);
+                    }
+                    let mut spans = vec![file_type];
+                    if entry.is_file() {
+                        let mut file_size = Span::from(format_file_size(entry));
+                        if diff_entry.diff.contains(DiffType::CONTENT) {
+                            file_size = file_size.style(diff_highlight_style);
+                        }
+                        spans.push(Span::from("  "));
+                        spans.push(file_size);
+                    }
+                    Line::from(spans)
+                } else {
+                    // no file is always a diff, the file exists in another tree
+                    Line::from(Span::styled("No file", diff_highlight_style))
+                }
+            }
+            _ => Line::default(),
+        };
+        if line_index < NB_METADATA_LINES {
+            line.style(diff_base_style).centered()
+        } else {
+            line
+        }
     }
 
     /// Split one area into sub-area, one for each tree

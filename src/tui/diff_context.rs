@@ -28,6 +28,7 @@ impl RenderDiffType {
 }
 
 /// Cache of permission delta
+#[derive(Clone)]
 struct PermissionDelta {
     /// Permission string for `Categ::ZERO`
     perm0: String,
@@ -39,6 +40,7 @@ struct PermissionDelta {
 
 /// When one `DiffEntry` can show comparison (2 different entries)
 /// Cache values for comparison
+#[derive(Clone)]
 struct DiffEntryRenderDiffContext {
     /// The N trees contains 2 different entries; map them to `Categ::ZERO` or `Categ::ONE`
     /// In diff mode, `Categ::ZERO` is old and `Categ::ONE` is new
@@ -49,6 +51,7 @@ struct DiffEntryRenderDiffContext {
 }
 
 /// Difference applicable to the `DiffEntry`
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum DiffEntryDiffType {
     /// More than 2 different entries: cannot compare, any delta is rendered as conflict
     ConflictAlways,
@@ -61,6 +64,7 @@ enum DiffEntryDiffType {
 }
 
 /// Context related to one `DiffEntry`
+#[derive(Clone)]
 struct DiffEntryContext {
     /// Diff type
     typ: DiffEntryDiffType,
@@ -98,7 +102,7 @@ impl DiffContext {
             }
         }
 
-        let entries_context = Vec::with_capacity(ctx.diffs.len());
+        let entries_context = vec![None; ctx.diffs.len()];
 
         Self {
             run_ctx: ctx.run_ctx,
@@ -136,7 +140,7 @@ impl DiffContext {
     }
 
     /// Get diff entry index for selected item in current view
-    fn get_diff_entry_index_selected(&self, view: View) -> usize {
+    pub fn get_diff_entry_index_selected(&self, view: View) -> usize {
         let view_index = self.list_panel.selected;
         self.get_diff_entry_index(view, view_index)
     }
