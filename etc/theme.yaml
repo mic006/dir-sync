@@ -42,12 +42,12 @@ diff_list:
     effect: bold
 
 diff_content:
-  old_fg: "#E57373" # md2.red.300
-  old_bg: "#3e0909"
-  new_fg: "#81C784" # md2.green.300
-  new_bg: "#123e15"
-  conflict_fg: "#BA68C8" # md2.purple.300
-  conflict_bg: "#21093e"
+  old_fg: "#ff4040"
+  old_bg: "#320808"
+  new_fg: "#40ee40"
+  new_bg: "#0b280b"
+  conflict_fg: "#ff40ff"
+  conflict_bg: "#320d32"
   line_num:
     effect: dim
 
