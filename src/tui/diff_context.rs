@@ -2,12 +2,13 @@
 
 use crate::diff::{self, DiffEntry};
 use crate::generic::bitmap_categ::{BitmapCateg, Categ};
+use crate::generic::format::owner::OwnerGroupDb;
 use crate::generic::format::permissions::format_file_type_and_permissions;
 use crate::generic::str_diff::{DiffChunkVec, diff_fixed_ascii_str};
 use crate::proto::TimestampOrd as _;
 
 use super::RunContext;
-use super::list_panel::ListPanelSelection;
+use super::list_panel::{ListPanel, ListPanelSelection};
 use super::{InitContext, View};
 
 /// How to render fields of one tree
@@ -76,10 +77,13 @@ struct DiffEntryContext {
 /// Application runtime context (displaying diffs)
 pub struct DiffContext {
     pub run_ctx: RunContext,
+    pub owner_group_db: OwnerGroupDb,
     /// List of diffs, with sync action
     pub diffs: Vec<DiffEntry>,
     /// Diff list panel
     pub list_panel: ListPanelSelection,
+    /// Content list panel
+    pub content_panel: ListPanel,
     /// List of index of `diffs` entries which have no sync action
     conflicts_indexes: Vec<usize>,
     /// List of index of `diffs` entries which have a sync action
@@ -91,6 +95,8 @@ pub struct DiffContext {
 impl DiffContext {
     pub fn new(ctx: InitContext) -> Self {
         let list_panel = ListPanelSelection::new(ctx.diffs.len());
+        let content_panel = ListPanel::new(0); // TODO
+
         let mut conflicts_indexes = Vec::with_capacity(ctx.diffs.len());
         let mut resolved_indexes = Vec::with_capacity(ctx.diffs.len());
 
@@ -106,8 +112,10 @@ impl DiffContext {
 
         Self {
             run_ctx: ctx.run_ctx,
+            owner_group_db: OwnerGroupDb::default(),
             diffs: ctx.diffs,
             list_panel,
+            content_panel,
             conflicts_indexes,
             resolved_indexes,
             entries_context,

@@ -11,7 +11,11 @@ use ratatui::{
 };
 
 use crate::diff::{DiffEntry, DiffType};
+use crate::generic::format::owner::OwnerGroupDb;
+use crate::generic::format::permissions::format_file_type_and_permissions;
 use crate::generic::format::size::format_file_size;
+use crate::generic::format::timestamp::format_opt_ts;
+use crate::generic::str_diff::DiffChunkType;
 use crate::proto::MyDirEntryExt;
 
 use super::diff_context::RenderDiffType;
@@ -237,6 +241,9 @@ impl App {
         if let Some(context) = &mut self.context
             && context.list_panel.content_length > 0
         {
+            context.content_panel.content_length = NB_METADATA_LINES; // TODO: remove
+            context.content_panel.normalize(area.height.into());
+
             let index = context.get_diff_entry_index_selected(self.view);
 
             for tree_index in 0..nb_trees {
@@ -247,81 +254,97 @@ impl App {
                 };
                 let diff_entry = &context.diffs[index];
                 let (diff_base_style, diff_highlight_style) =
-                    Self::get_render_styles(&self.theme, render_type);
-                let line = Self::get_content_line(
+                    get_render_styles(&self.theme, render_type);
+
+                let [metadata_area, _content_area] = Layout::vertical([
+                    Constraint::Length(NB_METADATA_LINES as u16),
+                    Constraint::Fill(1),
+                ])
+                .areas(areas[tree_index]);
+
+                Self::render_screen_normal_content_metadata(
+                    &mut context.owner_group_db,
                     diff_entry,
                     diff_base_style,
                     diff_highlight_style,
                     tree_index,
-                    METADATA_LINE_TYPE_SIZE,
+                    metadata_area,
+                    buf,
                 );
-                let row = areas[tree_index].rows().next().unwrap();
-                line.render(row, buf);
             }
         }
     }
 
-    /// Get rendering styles based on render type
-    fn get_render_styles(theme: &AppTheme, render_type: RenderDiffType) -> (Style, Style) {
-        match render_type {
-            RenderDiffType::ConflictAlways | RenderDiffType::ConflictDiff => (
-                theme.diff_content_conflict_base_style(),
-                theme.diff_content_conflict_highlight_style_patch(),
-            ),
-            RenderDiffType::Old => (
-                theme.diff_content_old_base_style(),
-                theme.diff_content_old_highlight_style_patch(),
-            ),
-            RenderDiffType::New => (
-                theme.diff_content_new_base_style(),
-                theme.diff_content_new_highlight_style_patch(),
-            ),
-        }
-    }
-
-    /// Get one line of content, for one tree
-    ///
-    /// Handles metadata line vs content line
-    fn get_content_line(
-        //&self,
-        //render_type: RenderDiffType,
+    fn render_screen_normal_content_metadata(
+        //&mut self,
+        owner_group_db: &mut OwnerGroupDb,
         diff_entry: &DiffEntry,
         diff_base_style: Style,
         diff_highlight_style: Style,
         tree_index: usize,
-        line_index: usize,
-        //area: Rect,
-        //buf: &mut Buffer,
-    ) -> Line<'_> {
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
         let entry = diff_entry.entries[tree_index].as_ref();
-        let line = match line_index {
-            METADATA_LINE_TYPE_SIZE => {
-                if let Some(entry) = entry {
-                    let mut file_type = Span::from(entry.type_as_str());
-                    if diff_entry.diff.contains(DiffType::TYPE) {
-                        file_type = file_type.style(diff_highlight_style);
-                    }
-                    let mut spans = vec![file_type];
-                    if entry.is_file() {
-                        let mut file_size = Span::from(format_file_size(entry));
-                        if diff_entry.diff.contains(DiffType::CONTENT) {
-                            file_size = file_size.style(diff_highlight_style);
+        for (i, row) in area.rows().enumerate() {
+            let line = if let Some(entry) = entry {
+                match i {
+                    METADATA_LINE_TYPE_SIZE => {
+                        let mut spans = Vec::with_capacity(3);
+                        spans.push(span_diff_style(
+                            entry.type_as_str(),
+                            diff_entry.diff.contains(DiffType::TYPE),
+                            diff_highlight_style,
+                        ));
+                        if entry.is_file() {
+                            spans.push(Span::from("  "));
+                            spans.push(span_diff_style(
+                                format_file_size(entry),
+                                diff_entry.diff.contains(DiffType::CONTENT),
+                                diff_highlight_style,
+                            ));
                         }
-                        spans.push(Span::from("  "));
-                        spans.push(file_size);
+                        Line::from(spans)
                     }
-                    Line::from(spans)
-                } else {
-                    // no file is always a diff, the file exists in another tree
-                    Line::from(Span::styled("No file", diff_highlight_style))
+                    METADATA_LINE_MTIME => Line::from(span_diff_style(
+                        format_opt_ts(entry.mtime.as_ref()),
+                        diff_entry.diff.contains(DiffType::MTIME),
+                        diff_highlight_style,
+                    )),
+                    #[allow(clippy::vec_init_then_push)] // TODO remove
+                    METADATA_LINE_PERMISSIONS_OWNER_GROUP => {
+                        let mut spans = Vec::with_capacity(5);
+                        spans.push(span_diff_style(
+                            format_file_type_and_permissions(entry),
+                            diff_entry.diff.contains(DiffType::PERMISSIONS),
+                            diff_highlight_style,
+                        ));
+                        spans.push(Span::from("  "));
+                        spans.push(span_diff_style(
+                            owner_group_db.get_owner(entry.uid).to_string(),
+                            diff_entry.diff.contains(DiffType::OWNER),
+                            diff_highlight_style,
+                        ));
+                        spans.push(Span::from(":"));
+                        spans.push(span_diff_style(
+                            owner_group_db.get_group(entry.gid),
+                            diff_entry.diff.contains(DiffType::GROUP),
+                            diff_highlight_style,
+                        ));
+                        Line::from(spans)
+                    }
+                    _ => Line::from(" "),
                 }
-            }
-            _ => Line::default(),
-        };
-        if line_index < NB_METADATA_LINES {
-            line.style(diff_base_style).centered()
-        } else {
-            line
+            } else {
+                match i {
+                    METADATA_LINE_TYPE_SIZE => {
+                        // no file is always a diff, the file exists in another tree
+                        Line::from(span_diff_style("No file", true, diff_highlight_style))
+                    }
+                    _ => Line::from(" "),
+                }
+            };
+            line.style(diff_base_style).centered().render(row, buf);
         }
     }
 
@@ -471,4 +494,35 @@ impl App {
     pub fn nb_trees(&self) -> usize {
         self.arg.dirs.len()
     }
+}
+
+/// Get rendering styles based on render type
+fn get_render_styles(theme: &AppTheme, render_type: RenderDiffType) -> (Style, Style) {
+    match render_type {
+        RenderDiffType::ConflictAlways | RenderDiffType::ConflictDiff => (
+            theme.diff_content_conflict_base_style(),
+            theme.diff_content_conflict_highlight_style_patch(),
+        ),
+        RenderDiffType::Old => (
+            theme.diff_content_old_base_style(),
+            theme.diff_content_old_highlight_style_patch(),
+        ),
+        RenderDiffType::New => (
+            theme.diff_content_new_base_style(),
+            theme.diff_content_new_highlight_style_patch(),
+        ),
+    }
+}
+
+/// Create `Span` with content, applying `highlight_style` if needed
+fn span_diff_style<'a, S, T>(s: S, diff: T, highlight_style: Style) -> Span<'a>
+where
+    S: Into<Span<'a>>,
+    T: Into<DiffChunkType>,
+{
+    let mut span = s.into();
+    if diff.into() == DiffChunkType::Differ {
+        span = span.style(highlight_style);
+    }
+    span
 }

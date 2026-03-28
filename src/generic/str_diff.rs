@@ -31,6 +31,15 @@ pub enum DiffChunkType {
     /// Different content compared to counterpart
     Differ,
 }
+impl From<bool> for DiffChunkType {
+    fn from(b: bool) -> Self {
+        if b {
+            DiffChunkType::Differ
+        } else {
+            DiffChunkType::Common
+        }
+    }
+}
 
 /// Difference chunk
 #[derive(Debug, PartialEq, Clone, Copy)]
