@@ -49,6 +49,7 @@ diff_content:
   conflict_fg: "#ff40ff"
   conflict_bg: "#320d32"
   line_num:
+    #fg: "#9E9E9E" # md2.gray.500
     effect: dim
 
 help:

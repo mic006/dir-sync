@@ -1,11 +1,13 @@
 //! TUI application context for diff handling
 
-use crate::diff::{self, DiffEntry};
+use crate::diff::{self, DiffEntry, DiffType};
 use crate::generic::bitmap_categ::{BitmapCateg, Categ};
 use crate::generic::format::owner::OwnerGroupDb;
 use crate::generic::format::permissions::format_file_type_and_permissions;
-use crate::generic::str_diff::{DiffChunkVec, diff_fixed_ascii_str};
-use crate::proto::TimestampOrd as _;
+use crate::generic::format::size::format_file_size;
+use crate::generic::format::timestamp::format_opt_ts;
+use crate::generic::str_diff::{DiffChunkType, DiffLine, diff_fixed_ascii_str};
+use crate::proto::{MyDirEntryExt as _, TimestampOrd as _};
 
 use super::RunContext;
 use super::list_panel::{ListPanel, ListPanelSelection};
@@ -28,50 +30,70 @@ impl RenderDiffType {
     }
 }
 
-/// Cache of permission delta
-#[derive(Clone)]
-struct PermissionDelta {
-    /// Permission string for `Categ::ZERO`
-    perm0: String,
-    /// Permission string for `Categ::ONE`
-    perm1: String,
-    /// View to highlight differences between perm0 and perm1
-    diff_view: DiffChunkVec,
+const METADATA_LINE_TYPE_SIZE: usize = 0;
+const METADATA_LINE_MTIME: usize = 1;
+const METADATA_LINE_PERMISSIONS_OWNER_GROUP: usize = 2;
+pub const NB_METADATA_LINES: usize = 3;
+
+type MetadataLines = [DiffLine; NB_METADATA_LINES];
+
+pub trait DiffEntryContextRender {
+    fn get_metadata(&self, tree_index: usize) -> &MetadataLines;
 }
 
 /// When one `DiffEntry` can show comparison (2 different entries)
-/// Cache values for comparison
-#[derive(Clone)]
-struct DiffEntryRenderDiffContext {
+struct DiffEntryContextDiff {
     /// The N trees contains 2 different entries; map them to `Categ::ZERO` or `Categ::ONE`
     /// In diff mode, `Categ::ZERO` is old and `Categ::ONE` is new
     /// In sync mode, it depends on the selected `sync_action`
     categ: BitmapCateg,
-    /// Delta of permissions, if permissions are different
-    perm_delta: Option<PermissionDelta>,
+    /// Metadata lines for each tree category
+    metadata: [MetadataLines; 2],
+    // TODO: content
+}
+impl DiffEntryContextRender for DiffEntryContextDiff {
+    fn get_metadata(&self, tree_index: usize) -> &MetadataLines {
+        &self.metadata[self.categ.get(tree_index) as usize]
+    }
 }
 
-/// Difference applicable to the `DiffEntry`
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum DiffEntryDiffType {
-    /// More than 2 different entries: cannot compare, any delta is rendered as conflict
-    ConflictAlways,
-    /// Diff mode: 2 entries with same mtime, cannot determine old vs new
+/// When one `DiffEntry` cannot show comparison (3+ entries)
+struct DiffEntryContextConflict {
+    /// Metadata lines for each tree
+    metadata: Vec<MetadataLines>,
+    // TODO: content
+}
+impl DiffEntryContextRender for DiffEntryContextConflict {
+    fn get_metadata(&self, tree_index: usize) -> &MetadataLines {
+        &self.metadata[tree_index]
+    }
+}
+
+/// Bare enum aligned with `DiffEntryContext` to simplify building
+enum DiffEntryContextType {
     Conflict,
-    /// Regular diff mode
-    /// Diff mode: mtime is used to identify new vs old
-    /// Sync mode: `sync_action` is used to identify new vs old
     OldNewDiff,
 }
 
 /// Context related to one `DiffEntry`
-#[derive(Clone)]
-struct DiffEntryContext {
-    /// Diff type
-    typ: DiffEntryDiffType,
-    /// Rendering context, applicable if `typ` is not `DiffEntryDiffType::ConflictAlways`
-    render_ctx: Option<DiffEntryRenderDiffContext>,
-    // TODO:: add content
+#[derive(Default)]
+enum DiffEntryContext {
+    /// Item not determined yet
+    #[default]
+    None,
+    /// More than 2 different entries: cannot compare, any delta is rendered as conflict
+    ConflictAlways(DiffEntryContextConflict),
+    /// Diff mode: 2 entries with same mtime, cannot determine old vs new
+    Conflict(DiffEntryContextDiff),
+    /// Regular diff mode, old vs new
+    /// Diff mode: mtime is used to identify new vs old
+    /// Sync mode: `sync_action` is used to identify new vs old, when no `sync_action` it will be rendered as conflict
+    OldNewDiff(DiffEntryContextDiff),
+}
+impl DiffEntryContext {
+    pub fn is_none(&self) -> bool {
+        matches!(self, DiffEntryContext::None)
+    }
 }
 
 /// Application runtime context (displaying diffs)
@@ -90,7 +112,7 @@ pub struct DiffContext {
     resolved_indexes: Vec<usize>,
     /// Context for diff rendering, matching entries in `diffs`
     /// Items are determined on the first rendering
-    entries_context: Vec<Option<DiffEntryContext>>,
+    entries_context: Vec<DiffEntryContext>,
 }
 impl DiffContext {
     pub fn new(ctx: InitContext) -> Self {
@@ -108,7 +130,8 @@ impl DiffContext {
             }
         }
 
-        let entries_context = vec![None; ctx.diffs.len()];
+        let mut entries_context = Vec::new();
+        entries_context.resize_with(ctx.diffs.len(), Default::default);
 
         Self {
             run_ctx: ctx.run_ctx,
@@ -209,20 +232,18 @@ impl DiffContext {
         &mut self,
         diff_index: usize,
         tree_index: usize,
-    ) -> RenderDiffType {
+    ) -> (RenderDiffType, &dyn DiffEntryContextRender) {
         if self.entries_context[diff_index].is_none() {
             self.gen_entry_context(diff_index, false);
         }
-        let entry_ctx = self.entries_context[diff_index].as_ref().unwrap();
-        match entry_ctx.typ {
-            DiffEntryDiffType::ConflictAlways => RenderDiffType::ConflictAlways,
-            DiffEntryDiffType::Conflict => RenderDiffType::ConflictDiff,
-            DiffEntryDiffType::OldNewDiff => {
-                match entry_ctx.render_ctx.as_ref().unwrap().categ.get(tree_index) {
-                    Categ::ZERO => RenderDiffType::Old,
-                    Categ::ONE => RenderDiffType::New,
-                }
-            }
+        match &self.entries_context[diff_index] {
+            DiffEntryContext::None => unreachable!("checked above"),
+            DiffEntryContext::ConflictAlways(ctx) => (RenderDiffType::ConflictAlways, ctx),
+            DiffEntryContext::Conflict(ctx) => (RenderDiffType::ConflictDiff, ctx),
+            DiffEntryContext::OldNewDiff(ctx) => match ctx.categ.get(tree_index) {
+                Categ::ZERO => (RenderDiffType::Old, ctx),
+                Categ::ONE => (RenderDiffType::New, ctx),
+            },
         }
     }
 
@@ -231,28 +252,28 @@ impl DiffContext {
         &mut self,
         diff_index: usize,
         tree_index: usize,
-    ) -> RenderDiffType {
+    ) -> (RenderDiffType, &dyn DiffEntryContextRender) {
         if self.entries_context[diff_index].is_none() {
             self.gen_entry_context(diff_index, true);
         }
-        let entry_ctx = self.entries_context[diff_index].as_ref().unwrap();
-        match entry_ctx.typ {
-            DiffEntryDiffType::ConflictAlways => RenderDiffType::ConflictAlways,
-            DiffEntryDiffType::Conflict => unreachable!("unused state in sync mode"),
-            DiffEntryDiffType::OldNewDiff => {
+        match &self.entries_context[diff_index] {
+            DiffEntryContext::None => unreachable!("checked above"),
+            DiffEntryContext::ConflictAlways(ctx) => (RenderDiffType::ConflictAlways, ctx),
+            DiffEntryContext::Conflict(_) => unreachable!("unused state in sync mode"),
+            DiffEntryContext::OldNewDiff(ctx) => {
                 let diff_entry = &self.diffs[diff_index];
                 if let Some(sync_source_index) = diff_entry.sync_source_index {
-                    let categ = &entry_ctx.render_ctx.as_ref().unwrap().categ;
+                    let categ = &ctx.categ;
                     if sync_source_index == tree_index as u8
                         || categ.get(tree_index) == categ.get(sync_source_index as usize)
                     {
                         // tree is source_index or has same content as source_index
-                        RenderDiffType::New
+                        (RenderDiffType::New, ctx)
                     } else {
-                        RenderDiffType::Old
+                        (RenderDiffType::Old, ctx)
                     }
                 } else {
-                    RenderDiffType::ConflictDiff
+                    (RenderDiffType::ConflictDiff, ctx)
                 }
             }
         }
@@ -261,7 +282,7 @@ impl DiffContext {
     fn gen_entry_context(&mut self, diff_index: usize, sync_mode: bool) {
         let diff_entry = &self.diffs[diff_index];
         let mut categ = BitmapCateg::default();
-        let mut categ_zero = diff_entry.entries[0].as_ref();
+        let categ_zero = diff_entry.entries[0].as_ref();
         let mut categ_one = None;
         let mut more_than_two_entries = false;
 
@@ -283,65 +304,140 @@ impl DiffContext {
         }
 
         if more_than_two_entries {
-            self.entries_context[diff_index] = Some(DiffEntryContext {
-                typ: DiffEntryDiffType::ConflictAlways,
-                render_ctx: None,
-            });
+            self.entries_context[diff_index] =
+                DiffEntryContext::ConflictAlways(self.gen_entry_context_conflict(diff_index));
             return;
         }
 
-        let mut categ_one = categ_one.expect("diff entry shall have 2 different entries");
+        let categ_one = categ_one.expect("diff entry shall have 2 different entries");
 
         let typ = if sync_mode {
-            DiffEntryDiffType::OldNewDiff
+            DiffEntryContextType::OldNewDiff
         } else {
             // try to identify old vs new
             if let Some(categ_zero_entry) = categ_zero {
                 if let Some(categ_one_entry) = categ_one {
                     // two existing files, compare mtime
                     match categ_zero_entry.mtime.cmp(&categ_one_entry.mtime) {
-                        std::cmp::Ordering::Less => DiffEntryDiffType::OldNewDiff,
+                        std::cmp::Ordering::Less => DiffEntryContextType::OldNewDiff,
                         std::cmp::Ordering::Equal => {
                             // two files with same mtime => conflict
-                            DiffEntryDiffType::Conflict
+                            DiffEntryContextType::Conflict
                         }
                         std::cmp::Ordering::Greater => {
                             // categ::ZERO shall be old content, categ::ONE shall be new content
                             categ.revert(self.nb_trees());
-                            std::mem::swap(&mut categ_zero, &mut categ_one);
-                            DiffEntryDiffType::OldNewDiff
+                            DiffEntryContextType::OldNewDiff
                         }
                     }
                 } else {
                     // one existing file => consider new
                     // categ::ZERO shall be old content, categ::ONE shall be new content
                     categ.revert(self.nb_trees());
-                    std::mem::swap(&mut categ_zero, &mut categ_one);
-                    DiffEntryDiffType::OldNewDiff
+                    DiffEntryContextType::OldNewDiff
                 }
             } else {
                 // one existing file => consider new
-                DiffEntryDiffType::OldNewDiff
+                DiffEntryContextType::OldNewDiff
             }
         };
 
-        let perm_delta = if diff_entry.diff.contains(diff::DiffType::PERMISSIONS) {
-            let perm0 = format_file_type_and_permissions(categ_zero.as_ref().unwrap());
-            let perm1 = format_file_type_and_permissions(categ_one.as_ref().unwrap());
-            let diff_view = diff_fixed_ascii_str(&perm0, &perm1);
-            Some(PermissionDelta {
-                perm0,
-                perm1,
-                diff_view,
-            })
+        let ctx = self.gen_entry_context_diff(diff_index, categ);
+        self.entries_context[diff_index] = match typ {
+            DiffEntryContextType::Conflict => DiffEntryContext::Conflict(ctx),
+            DiffEntryContextType::OldNewDiff => DiffEntryContext::OldNewDiff(ctx),
+        };
+    }
+
+    fn gen_entry_context_conflict(&mut self, diff_index: usize) -> DiffEntryContextConflict {
+        let metadata = (0..self.nb_trees())
+            .map(|tree_index| self.gen_entry_context_metadata(diff_index, tree_index, None))
+            .collect::<Vec<_>>();
+
+        DiffEntryContextConflict { metadata }
+    }
+
+    fn gen_entry_context_diff(
+        &mut self,
+        diff_index: usize,
+        categ: BitmapCateg,
+    ) -> DiffEntryContextDiff {
+        let categ0_idx = categ.get_first(Categ::ZERO);
+        let categ1_idx = categ.get_first(Categ::ONE);
+        let diff_entry = &self.diffs[diff_index];
+
+        let [perm0, perm1] = if diff_entry.diff.contains(diff::DiffType::PERMISSIONS) {
+            let perm0 =
+                format_file_type_and_permissions(diff_entry.entries[categ0_idx].as_ref().unwrap());
+            let perm1 =
+                format_file_type_and_permissions(diff_entry.entries[categ1_idx].as_ref().unwrap());
+            let (perm0, perm1) = diff_fixed_ascii_str(&perm0, &perm1);
+            [Some(perm0), Some(perm1)]
         } else {
-            None
+            [None, None]
         };
 
-        self.entries_context[diff_index] = Some(DiffEntryContext {
-            typ,
-            render_ctx: Some(DiffEntryRenderDiffContext { categ, perm_delta }),
+        let metadata = [(categ0_idx, perm0), (categ1_idx, perm1)].map(|(tree_index, perm)| {
+            self.gen_entry_context_metadata(diff_index, tree_index, perm)
         });
+
+        DiffEntryContextDiff { categ, metadata }
+    }
+
+    fn gen_entry_context_metadata(
+        &mut self,
+        diff_index: usize,
+        tree_index: usize,
+        perm: Option<DiffLine>, // pre-built permission part
+    ) -> MetadataLines {
+        let mut metadata = MetadataLines::default();
+        let diff_entry = &self.diffs[diff_index];
+        let entry = diff_entry.entries[tree_index].as_ref();
+        if let Some(entry) = entry {
+            metadata[METADATA_LINE_TYPE_SIZE].append_str(
+                diff_entry.diff.contains(DiffType::TYPE).into(),
+                entry.type_as_str(),
+            );
+            if entry.is_file() {
+                metadata[METADATA_LINE_TYPE_SIZE].append_str(DiffChunkType::Common, "  ");
+                metadata[METADATA_LINE_TYPE_SIZE].append_str(
+                    diff_entry.diff.contains(DiffType::CONTENT).into(),
+                    &format_file_size(entry),
+                );
+            }
+
+            metadata[METADATA_LINE_MTIME].append_str(
+                diff_entry.diff.contains(DiffType::MTIME).into(),
+                &format_opt_ts(entry.mtime.as_ref()),
+            );
+
+            if let Some(perm) = perm {
+                // use pre-built permission part
+                metadata[METADATA_LINE_PERMISSIONS_OWNER_GROUP] = perm;
+            } else {
+                // build permission part from entry
+                metadata[METADATA_LINE_PERMISSIONS_OWNER_GROUP].append_str(
+                    diff_entry.diff.contains(DiffType::PERMISSIONS).into(),
+                    &format_file_type_and_permissions(entry),
+                );
+            }
+            metadata[METADATA_LINE_PERMISSIONS_OWNER_GROUP].append_str(DiffChunkType::Common, "  ");
+            metadata[METADATA_LINE_PERMISSIONS_OWNER_GROUP].append_str(
+                diff_entry.diff.contains(DiffType::OWNER).into(),
+                self.owner_group_db.get_owner(entry.uid),
+            );
+            metadata[METADATA_LINE_PERMISSIONS_OWNER_GROUP].append_chr(DiffChunkType::Common, ':');
+            metadata[METADATA_LINE_PERMISSIONS_OWNER_GROUP].append_str(
+                diff_entry.diff.contains(DiffType::GROUP).into(),
+                self.owner_group_db.get_group(entry.gid),
+            );
+        } else {
+            // no file is always a diff, the file exists in another tree
+            metadata[METADATA_LINE_TYPE_SIZE].append_str(DiffChunkType::Differ, "No file");
+            metadata[METADATA_LINE_MTIME].append_chr(DiffChunkType::Common, ' ');
+            metadata[METADATA_LINE_PERMISSIONS_OWNER_GROUP].append_chr(DiffChunkType::Common, ' ');
+        }
+        metadata
     }
 
     fn nb_trees(&self) -> usize {

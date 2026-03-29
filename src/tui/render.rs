@@ -10,23 +10,12 @@ use ratatui::{
     widgets::{Block, Clear, Padding, Paragraph, Widget},
 };
 
-use crate::diff::{DiffEntry, DiffType};
-use crate::generic::format::owner::OwnerGroupDb;
-use crate::generic::format::permissions::format_file_type_and_permissions;
-use crate::generic::format::size::format_file_size;
-use crate::generic::format::timestamp::format_opt_ts;
-use crate::generic::str_diff::DiffChunkType;
-use crate::proto::MyDirEntryExt;
+use crate::generic::str_diff::{DiffChunk, DiffChunkType, DiffLine};
 
-use super::diff_context::RenderDiffType;
+use super::diff_context::{DiffEntryContextRender, NB_METADATA_LINES, RenderDiffType};
 use super::rich_text::{Effect, RichSpan, RichText};
 use super::theme::AppTheme;
 use super::{App, View, help};
-
-const METADATA_LINE_TYPE_SIZE: usize = 0;
-const METADATA_LINE_MTIME: usize = 1;
-const METADATA_LINE_PERMISSIONS_OWNER_GROUP: usize = 2;
-const NB_METADATA_LINES: usize = 3;
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer)
@@ -220,13 +209,11 @@ impl App {
     fn render_screen_normal_middle_bar(&self, area: Rect, buf: &mut Buffer) {
         let bar_style = self.theme.bar_style();
         let areas = self.split_area_per_tree(area, buf);
-        std::iter::zip(areas.iter(), self.arg.dirs.iter())
-            .enumerate()
-            .for_each(|(i, (area, dir))| {
-                Line::styled(format!("#{} {dir}", i + 1), bar_style)
-                    .centered()
-                    .render(*area, buf);
-            });
+        for (i, (area, dir)) in std::iter::zip(areas.iter(), self.arg.dirs.iter()).enumerate() {
+            Line::styled(format!("#{} {dir}", i + 1), bar_style)
+                .centered()
+                .render(*area, buf);
+        }
     }
 
     /// Render content of each tree on normal screen
@@ -241,18 +228,17 @@ impl App {
         if let Some(context) = &mut self.context
             && context.list_panel.content_length > 0
         {
-            context.content_panel.content_length = NB_METADATA_LINES; // TODO: remove
+            context.content_panel.content_length = 10; // TODO: remove
             context.content_panel.normalize(area.height.into());
 
             let index = context.get_diff_entry_index_selected(self.view);
 
             for tree_index in 0..nb_trees {
-                let render_type = if self.view.is_diff() {
+                let (render_type, render_ctx) = if self.view.is_diff() {
                     context.get_render_type_mode_diff(index, tree_index)
                 } else {
                     context.get_render_type_mode_sync(index, tree_index)
                 };
-                let diff_entry = &context.diffs[index];
                 let (diff_base_style, diff_highlight_style) =
                     get_render_styles(&self.theme, render_type);
 
@@ -263,8 +249,7 @@ impl App {
                 .areas(areas[tree_index]);
 
                 Self::render_screen_normal_content_metadata(
-                    &mut context.owner_group_db,
-                    diff_entry,
+                    render_ctx,
                     diff_base_style,
                     diff_highlight_style,
                     tree_index,
@@ -276,75 +261,20 @@ impl App {
     }
 
     fn render_screen_normal_content_metadata(
-        //&mut self,
-        owner_group_db: &mut OwnerGroupDb,
-        diff_entry: &DiffEntry,
+        render_ctx: &dyn DiffEntryContextRender,
         diff_base_style: Style,
         diff_highlight_style: Style,
         tree_index: usize,
         area: Rect,
         buf: &mut Buffer,
     ) {
-        let entry = diff_entry.entries[tree_index].as_ref();
-        for (i, row) in area.rows().enumerate() {
-            let line = if let Some(entry) = entry {
-                match i {
-                    METADATA_LINE_TYPE_SIZE => {
-                        let mut spans = Vec::with_capacity(3);
-                        spans.push(span_diff_style(
-                            entry.type_as_str(),
-                            diff_entry.diff.contains(DiffType::TYPE),
-                            diff_highlight_style,
-                        ));
-                        if entry.is_file() {
-                            spans.push(Span::from("  "));
-                            spans.push(span_diff_style(
-                                format_file_size(entry),
-                                diff_entry.diff.contains(DiffType::CONTENT),
-                                diff_highlight_style,
-                            ));
-                        }
-                        Line::from(spans)
-                    }
-                    METADATA_LINE_MTIME => Line::from(span_diff_style(
-                        format_opt_ts(entry.mtime.as_ref()),
-                        diff_entry.diff.contains(DiffType::MTIME),
-                        diff_highlight_style,
-                    )),
-                    #[allow(clippy::vec_init_then_push)] // TODO remove
-                    METADATA_LINE_PERMISSIONS_OWNER_GROUP => {
-                        let mut spans = Vec::with_capacity(5);
-                        spans.push(span_diff_style(
-                            format_file_type_and_permissions(entry),
-                            diff_entry.diff.contains(DiffType::PERMISSIONS),
-                            diff_highlight_style,
-                        ));
-                        spans.push(Span::from("  "));
-                        spans.push(span_diff_style(
-                            owner_group_db.get_owner(entry.uid).to_string(),
-                            diff_entry.diff.contains(DiffType::OWNER),
-                            diff_highlight_style,
-                        ));
-                        spans.push(Span::from(":"));
-                        spans.push(span_diff_style(
-                            owner_group_db.get_group(entry.gid),
-                            diff_entry.diff.contains(DiffType::GROUP),
-                            diff_highlight_style,
-                        ));
-                        Line::from(spans)
-                    }
-                    _ => Line::from(" "),
-                }
-            } else {
-                match i {
-                    METADATA_LINE_TYPE_SIZE => {
-                        // no file is always a diff, the file exists in another tree
-                        Line::from(span_diff_style("No file", true, diff_highlight_style))
-                    }
-                    _ => Line::from(" "),
-                }
-            };
-            line.style(diff_base_style).centered().render(row, buf);
+        let metadata = render_ctx.get_metadata(tree_index);
+
+        for (line, row) in std::iter::zip(metadata.iter(), area.rows()) {
+            line_diff_style(line, diff_highlight_style)
+                .style(diff_base_style)
+                .centered()
+                .render(row, buf);
         }
     }
 
@@ -514,15 +444,21 @@ fn get_render_styles(theme: &AppTheme, render_type: RenderDiffType) -> (Style, S
     }
 }
 
-/// Create `Span` with content, applying `highlight_style` if needed
-fn span_diff_style<'a, S, T>(s: S, diff: T, highlight_style: Style) -> Span<'a>
-where
-    S: Into<Span<'a>>,
-    T: Into<DiffChunkType>,
-{
-    let mut span = s.into();
-    if diff.into() == DiffChunkType::Differ {
+/// Create `Span` with content, applying `highlight_style` when differs
+fn span_diff_style(chunk: &DiffChunk, highlight_style: Style) -> Span<'_> {
+    let mut span = Span::from(&chunk.s);
+    if chunk.kind == DiffChunkType::Differ {
         span = span.style(highlight_style);
     }
     span
+}
+
+/// Create `Line` with content, applying `highlight_style` when differs
+fn line_diff_style(line: &DiffLine, highlight_style: Style) -> Line<'_> {
+    Line::from(
+        line.0
+            .iter()
+            .map(|chunk| span_diff_style(chunk, highlight_style))
+            .collect::<Vec<_>>(),
+    )
 }
