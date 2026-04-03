@@ -35,8 +35,9 @@ pub struct Config {
     /// Name of default profile, when profile is not specified on the command line
     default_profile: Option<String>,
 
-    /// Theme file for Terminal UI rendering
-    pub theme: Option<PathBuf>,
+    /// Terminal UI related settings
+    #[serde(default)]
+    pub tui: TuiConfig,
 }
 
 impl Config {
@@ -74,6 +75,25 @@ impl Default for PerformanceCfg {
         Self {
             data_buffer_size: MemSize::new(64 * 1024),
             fs_queue_size: 8,
+        }
+    }
+}
+
+/// Terminal UI related settings
+#[derive(Deserialize, Debug, PartialEq)]
+pub struct TuiConfig {
+    /// Theme file for Terminal UI rendering
+    pub theme: Option<PathBuf>,
+
+    /// Maximum file size to read and display content
+    /// Note: must be <= `performance.data_buffer_size`
+    content_max_size: MemSize,
+}
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            theme: None,
+            content_max_size: MemSize::new(32 * 1024),
         }
     }
 }
@@ -319,7 +339,10 @@ pub mod tests {
                 ),
             ]),
             default_profile: None,
-            theme: Some(PathBuf::from("/path/to/theme/file")),
+            tui: TuiConfig {
+                theme: Some(PathBuf::from("/path/to/theme/file")),
+                content_max_size: MemSize::new(16 * 1024),
+            },
         };
         assert_eq!(cfg, expected_cfg);
     }
