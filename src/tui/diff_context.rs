@@ -1,16 +1,20 @@
 //! TUI application context for diff handling
 
+use std::sync::Arc;
+
 use crate::diff::{self, DiffEntry, DiffType};
 use crate::generic::bitmap_categ::{BitmapCateg, Categ};
+use crate::generic::file::MyHash;
 use crate::generic::format::owner::OwnerGroupDb;
 use crate::generic::format::permissions::format_file_type_and_permissions;
 use crate::generic::format::size::format_file_size;
 use crate::generic::format::timestamp::format_opt_ts;
-use crate::generic::str_diff::{DiffChunkType, DiffLine, diff_fixed_ascii_str};
-use crate::proto::{MyDirEntryExt as _, TimestampOrd as _};
+use crate::generic::str_diff::{DiffChunkType, DiffLine, DiffMultiline, diff_fixed_ascii_str};
+use crate::proto::action::FileReadReq;
+use crate::proto::{ActionReq, MyDirEntryExt as _, Specific, TimestampOrd as _};
 
 use super::RunContext;
-use super::list_panel::{ListPanel, ListPanelSelection};
+use super::list_panel::{ListPanel, ListPanelMove, ListPanelSelection};
 use super::{InitContext, View};
 
 /// How to render fields of one tree
@@ -30,6 +34,26 @@ impl RenderDiffType {
     }
 }
 
+/// State for content of one file
+pub enum ContentState {
+    /// No content: directory, empty file
+    Empty,
+    /// Content requested to tree, waiting for response
+    Waiting,
+    /// String content, ready for comparison with counterpart (`DiffEntryContextDiff`)
+    Str(String),
+    /// Content ready for rendering, single line (symlink)
+    RenderSingle(String),
+    /// Content ready for rendering, multi lines (file content)
+    RenderMulti(DiffMultiline),
+    /// Content is too big, not retrieved nor displayed. Give file hash as hex string
+    TooBig(String),
+    /// Binary content, not displayed. Give file hash as hex string
+    Binary(String),
+    /// All trees have the same content
+    SameContent,
+}
+
 const METADATA_LINE_TYPE_SIZE: usize = 0;
 const METADATA_LINE_MTIME: usize = 1;
 const METADATA_LINE_PERMISSIONS_OWNER_GROUP: usize = 2;
@@ -39,6 +63,9 @@ type MetadataLines = [DiffLine; NB_METADATA_LINES];
 
 pub trait DiffEntryContextRender {
     fn get_metadata(&self, tree_index: usize) -> &MetadataLines;
+    fn get_content(&self, tree_index: usize) -> &ContentState;
+
+    fn set_raw_content(&mut self, tree_index: usize, content: Vec<u8>);
 }
 
 /// When one `DiffEntry` can show comparison (2 different entries)
@@ -49,11 +76,24 @@ struct DiffEntryContextDiff {
     categ: BitmapCateg,
     /// Metadata lines for each tree category
     metadata: [MetadataLines; 2],
-    // TODO: content
+    /// Content for each tree category; None means same content for all trees
+    content: Option<[ContentState; 2]>,
 }
 impl DiffEntryContextRender for DiffEntryContextDiff {
     fn get_metadata(&self, tree_index: usize) -> &MetadataLines {
         &self.metadata[self.categ.get(tree_index) as usize]
+    }
+
+    fn get_content(&self, tree_index: usize) -> &ContentState {
+        self.content
+            .as_ref()
+            .map_or(&ContentState::SameContent, |content| {
+                &content[self.categ.get(tree_index) as usize]
+            })
+    }
+
+    fn set_raw_content(&mut self, _tree_index: usize, _content: Vec<u8>) {
+        todo!();
     }
 }
 
@@ -61,11 +101,22 @@ impl DiffEntryContextRender for DiffEntryContextDiff {
 struct DiffEntryContextConflict {
     /// Metadata lines for each tree
     metadata: Vec<MetadataLines>,
-    // TODO: content
+    /// Content for each tree; None means same content for all trees
+    content: Option<Vec<ContentState>>,
 }
 impl DiffEntryContextRender for DiffEntryContextConflict {
     fn get_metadata(&self, tree_index: usize) -> &MetadataLines {
         &self.metadata[tree_index]
+    }
+
+    fn get_content(&self, tree_index: usize) -> &ContentState {
+        self.content
+            .as_ref()
+            .map_or(&ContentState::SameContent, |content| &content[tree_index])
+    }
+
+    fn set_raw_content(&mut self, _tree_index: usize, _content: Vec<u8>) {
+        todo!();
     }
 }
 
@@ -158,6 +209,24 @@ impl DiffContext {
             }
             _ => unreachable!("context is invalid for the unhandled views"),
         }
+        self.on_selection_update(view);
+    }
+
+    /// Update list panel with given event
+    ///
+    /// - manage panel update
+    /// - manage selection change: prepare content view for the newly selected item if needed
+    pub fn update_list_panel(&mut self, view: View, event: ListPanelMove) {
+        self.list_panel.handle(event);
+        self.on_selection_update(view);
+    }
+
+    /// Update content panel with new selection
+    fn on_selection_update(&mut self, view: View) {
+        let diff_index = self.get_diff_entry_index_selected(view);
+        if diff_index < self.diffs.len() && self.entries_context[diff_index].is_none() {
+            self.gen_entry_context(diff_index, !view.is_diff());
+        }
     }
 
     /// Get diff entry index for current view
@@ -172,7 +241,7 @@ impl DiffContext {
 
     /// Get diff entry index for selected item in current view
     pub fn get_diff_entry_index_selected(&self, view: View) -> usize {
-        let view_index = self.list_panel.selected;
+        let view_index: usize = self.list_panel.selected;
         self.get_diff_entry_index(view, view_index)
     }
 
@@ -227,58 +296,53 @@ impl DiffContext {
         list.insert(idx, index);
     }
 
-    /// Get `RenderDiffType` for one tree in diff mode
-    pub fn get_render_type_mode_diff(
+    /// Get rendering info for one element
+    pub fn get_content_renderer(
         &mut self,
-        diff_index: usize,
         tree_index: usize,
+        view: View,
     ) -> (RenderDiffType, &dyn DiffEntryContextRender) {
-        if self.entries_context[diff_index].is_none() {
-            self.gen_entry_context(diff_index, false);
-        }
+        let diff_index = self.get_diff_entry_index_selected(view);
+        assert!(diff_index < self.diffs.len());
         match &self.entries_context[diff_index] {
-            DiffEntryContext::None => unreachable!("checked above"),
+            DiffEntryContext::None => {
+                unreachable!("element shall be created by 'on_selection_update()'")
+            }
             DiffEntryContext::ConflictAlways(ctx) => (RenderDiffType::ConflictAlways, ctx),
             DiffEntryContext::Conflict(ctx) => (RenderDiffType::ConflictDiff, ctx),
-            DiffEntryContext::OldNewDiff(ctx) => match ctx.categ.get(tree_index) {
-                Categ::ZERO => (RenderDiffType::Old, ctx),
-                Categ::ONE => (RenderDiffType::New, ctx),
-            },
-        }
-    }
-
-    /// Get `RenderDiffType` for one tree in sync mode
-    pub fn get_render_type_mode_sync(
-        &mut self,
-        diff_index: usize,
-        tree_index: usize,
-    ) -> (RenderDiffType, &dyn DiffEntryContextRender) {
-        if self.entries_context[diff_index].is_none() {
-            self.gen_entry_context(diff_index, true);
-        }
-        match &self.entries_context[diff_index] {
-            DiffEntryContext::None => unreachable!("checked above"),
-            DiffEntryContext::ConflictAlways(ctx) => (RenderDiffType::ConflictAlways, ctx),
-            DiffEntryContext::Conflict(_) => unreachable!("unused state in sync mode"),
             DiffEntryContext::OldNewDiff(ctx) => {
-                let diff_entry = &self.diffs[diff_index];
-                if let Some(sync_source_index) = diff_entry.sync_source_index {
-                    let categ = &ctx.categ;
-                    if sync_source_index == tree_index as u8
-                        || categ.get(tree_index) == categ.get(sync_source_index as usize)
-                    {
-                        // tree is source_index or has same content as source_index
-                        (RenderDiffType::New, ctx)
-                    } else {
-                        (RenderDiffType::Old, ctx)
+                if view.is_diff() {
+                    // diff mode: Categ::ZERO is old, Categ::ONE is new
+                    match ctx.categ.get(tree_index) {
+                        Categ::ZERO => (RenderDiffType::Old, ctx),
+                        Categ::ONE => (RenderDiffType::New, ctx),
                     }
                 } else {
-                    (RenderDiffType::ConflictDiff, ctx)
+                    let diff_entry = &self.diffs[diff_index];
+                    if let Some(sync_source_index) = diff_entry.sync_source_index {
+                        let categ = &ctx.categ;
+                        if sync_source_index == tree_index as u8
+                            || categ.get(tree_index) == categ.get(sync_source_index as usize)
+                        {
+                            // tree is source_index or has same content as source_index => new
+                            (RenderDiffType::New, ctx)
+                        } else {
+                            // other content => old
+                            (RenderDiffType::Old, ctx)
+                        }
+                    } else {
+                        // no sync action => conflict
+                        (RenderDiffType::ConflictDiff, ctx)
+                    }
                 }
             }
         }
     }
 
+    /// Generate `DiffEntryContext` for one `DiffEntry`
+    ///
+    /// - evaluate which variant of `DiffEntryContext` shall be used
+    /// - instantiate it
     fn gen_entry_context(&mut self, diff_index: usize, sync_mode: bool) {
         let diff_entry = &self.diffs[diff_index];
         let mut categ = BitmapCateg::default();
@@ -354,7 +418,10 @@ impl DiffContext {
             .map(|tree_index| self.gen_entry_context_metadata(diff_index, tree_index, None))
             .collect::<Vec<_>>();
 
-        DiffEntryContextConflict { metadata }
+        DiffEntryContextConflict {
+            metadata,
+            content: None,
+        }
     }
 
     fn gen_entry_context_diff(
@@ -381,9 +448,14 @@ impl DiffContext {
             self.gen_entry_context_metadata(diff_index, tree_index, perm)
         });
 
-        DiffEntryContextDiff { categ, metadata }
+        DiffEntryContextDiff {
+            categ,
+            metadata,
+            content: None,
+        }
     }
 
+    /// Generate metadata for one tree
     fn gen_entry_context_metadata(
         &mut self,
         diff_index: usize,
@@ -440,7 +512,69 @@ impl DiffContext {
         metadata
     }
 
+    /// Generate content for one tree
+    fn gen_entry_context_content(&mut self, diff_index: usize, tree_index: usize) -> ContentState {
+        let diff_entry = &self.diffs[diff_index];
+        let entry = diff_entry.entries[tree_index].as_ref();
+        if let Some(entry) = entry {
+            match entry.specific.as_ref().unwrap() {
+                Specific::Regular(regular_data) => {
+                    if regular_data.size == 0 {
+                        // empty file
+                        ContentState::Empty
+                    } else if regular_data.size >= 64 * 1024 {
+                        // file too big
+                        ContentState::TooBig(hash_to_string(&regular_data.hash))
+                    } else {
+                        // ask for file content
+                        let _ignored = self.run_ctx.trees[tree_index]
+                            .get_fs_action_requester()
+                            .send(Arc::new(ActionReq::ReadFile(FileReadReq {
+                                rel_path: diff_entry.rel_path.clone(),
+                            })));
+                        // wait for response
+                        ContentState::Waiting
+                    }
+                }
+                Specific::Symlink(target) => ContentState::RenderSingle(target.clone()),
+                _ => ContentState::Empty,
+            }
+        } else {
+            // no entry
+            ContentState::Empty
+        }
+    }
+
     fn nb_trees(&self) -> usize {
         self.run_ctx.trees.len()
     }
+}
+
+/// Convert raw content data to string
+///
+/// - check UTF8 validity
+/// - replace tab with arrow
+/// - detect other control code characters
+///
+/// # Errors
+/// - invalid UTF8 (binary data)
+/// - control code characters found
+fn raw_content_to_content_state(raw: Vec<u8>) -> Result<String, ()> {
+    // convert to string
+    let s = String::from_utf8(raw).map_err(|_| ())?;
+
+    // check control code characters
+    s.chars()
+        .map(|c| match c {
+            '\t' => Ok('⭲'),
+            '\n' => Ok('\n'),
+            _ if c.is_control() => Err(()), // control character, not allowed
+            _ => Ok(c),
+        })
+        .collect()
+}
+
+/// Convert file hash to string
+fn hash_to_string(h: &[u8]) -> String {
+    MyHash::from_slice(h).unwrap().to_hex().to_string()
 }

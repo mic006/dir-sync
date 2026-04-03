@@ -29,6 +29,11 @@ pub struct DiffChunk {
 #[derive(Debug, PartialEq, Default)]
 pub struct DiffLine(pub Vec<DiffChunk>);
 impl DiffLine {
+    #[must_use]
+    pub fn new(kind: DiffChunkType, s: String) -> Self {
+        Self(vec![DiffChunk { kind, s }])
+    }
+
     pub fn append_chr(&mut self, kind: DiffChunkType, c: char) {
         if let Some(last_chunk) = self.0.last_mut()
             && last_chunk.kind == kind

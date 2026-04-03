@@ -402,7 +402,7 @@ impl App {
     /// Manage navigation keys for diff list
     fn handle_key_diff_nav(&mut self, event: ListPanelMove) {
         if let Some(context) = &mut self.context {
-            context.list_panel.handle(event);
+            context.update_list_panel(self.view, event);
             self.redraw = true;
         }
     }

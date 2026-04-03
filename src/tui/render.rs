@@ -231,14 +231,8 @@ impl App {
             context.content_panel.content_length = 10; // TODO: remove
             context.content_panel.normalize(area.height.into());
 
-            let index = context.get_diff_entry_index_selected(self.view);
-
             for tree_index in 0..nb_trees {
-                let (render_type, render_ctx) = if self.view.is_diff() {
-                    context.get_render_type_mode_diff(index, tree_index)
-                } else {
-                    context.get_render_type_mode_sync(index, tree_index)
-                };
+                let (render_type, render_ctx) = context.get_content_renderer(tree_index, self.view);
                 let (diff_base_style, diff_highlight_style) =
                     get_render_styles(&self.theme, render_type);
 
