@@ -289,7 +289,7 @@ impl App {
         match event {
             AppTaskEvent::InitContext(context) => {
                 let no_diff = context.diffs.is_empty();
-                self.context = Some(DiffContext::new(context));
+                self.context = Some(DiffContext::new(context, self.config_tui.clone()));
                 if no_diff {
                     if !self.arg.read_only {
                         self.sync_done = true;

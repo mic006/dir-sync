@@ -165,7 +165,7 @@ impl Default for PerformanceCfg {
 pub struct TuiConfig {
     /// Maximum file size to read and display content
     /// Note: must be <= `performance.data_buffer_size`
-    content_max_size: MemSize,
+    pub content_max_size: MemSize,
 }
 impl Default for TuiConfig {
     fn default() -> Self {

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::config::TuiConfigRef;
 use crate::diff::{self, DiffEntry, DiffType};
 use crate::generic::bitmap_categ::{BitmapCateg, Categ};
 use crate::generic::file::MyHash;
@@ -150,6 +151,7 @@ impl DiffEntryContext {
 /// Application runtime context (displaying diffs)
 pub struct DiffContext {
     pub run_ctx: RunContext,
+    pub config: TuiConfigRef,
     pub owner_group_db: OwnerGroupDb,
     /// List of diffs, with sync action
     pub diffs: Vec<DiffEntry>,
@@ -166,7 +168,7 @@ pub struct DiffContext {
     entries_context: Vec<DiffEntryContext>,
 }
 impl DiffContext {
-    pub fn new(ctx: InitContext) -> Self {
+    pub fn new(ctx: InitContext, config: TuiConfigRef) -> Self {
         let list_panel = ListPanelSelection::new(ctx.diffs.len());
         let content_panel = ListPanel::new(0); // TODO
 
@@ -186,6 +188,7 @@ impl DiffContext {
 
         Self {
             run_ctx: ctx.run_ctx,
+            config,
             owner_group_db: OwnerGroupDb::default(),
             diffs: ctx.diffs,
             list_panel,
@@ -522,7 +525,9 @@ impl DiffContext {
                     if regular_data.size == 0 {
                         // empty file
                         ContentState::Empty
-                    } else if regular_data.size >= 64 * 1024 {
+                    } else if regular_data.size
+                        >= self.config.tui.content_max_size.as_nb_bytes() as u64
+                    {
                         // file too big
                         ContentState::TooBig(hash_to_string(&regular_data.hash))
                     } else {
