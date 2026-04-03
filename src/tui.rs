@@ -3,9 +3,12 @@
 // allow cast for screen size (u16)
 #![allow(clippy::cast_possible_truncation)]
 
+use std::sync::Arc;
+
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt as _;
 
+use crate::config::{Config, ConfigRef, TuiConfig};
 use crate::diff::{DiffEntry, DiffMode};
 use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
 use crate::sync_exec::SyncStat;
@@ -36,11 +39,21 @@ pub async fn async_main_tui(arg: Arg) -> anyhow::Result<std::process::ExitCode> 
     );
 
     let (exit_message_sender, exit_message_receiver) = flume::bounded(1);
-    let theme = AppTheme::load(None)?;
+
+    let config = Config::from_file(None)?;
+    let (config_ctx, config_tui) = config.extract_tui(arg.profile.as_deref())?;
+    let theme = AppTheme::load(config_tui.theme.as_deref())?;
 
     let task_tracker_main = TaskTrackerMain::default();
     task_tracker_main.setup_signal_catching()?;
-    let app = App::new(task_tracker_main.tracker(), arg, exit_message_sender, theme);
+    let app = App::new(
+        task_tracker_main.tracker(),
+        arg,
+        exit_message_sender,
+        Arc::new(config_ctx),
+        config_tui,
+        theme,
+    );
     task_tracker_main.spawn(app.task())?;
     let result = task_tracker_main.wait().await;
     ratatui::restore();
@@ -113,6 +126,10 @@ struct App {
     task_tracker: TaskTracker,
     /// CLI arguments
     arg: Arg,
+    /// Core configuration
+    config: ConfigRef,
+    /// Terminal UI configuration
+    config_tui: TuiConfig,
     /// Terminal UI theme
     theme: AppTheme,
     /// Indication that application shall run / exit
@@ -142,6 +159,8 @@ impl App {
         task_tracker: TaskTracker,
         mut arg: Arg,
         exit_message_sender: flume::Sender<String>,
+        config: ConfigRef,
+        config_tui: TuiConfig,
         theme: AppTheme,
     ) -> Self {
         // use read-only mode if invoked as 'dir-diff'
@@ -155,6 +174,8 @@ impl App {
         Self {
             task_tracker,
             arg,
+            config,
+            config_tui,
             theme,
             running: true,
             redraw: true,
@@ -180,10 +201,12 @@ impl App {
     async fn init_task(
         task_tracker: TaskTracker,
         arg: Arg,
+        config: ConfigRef,
         task_event_sender: flume::Sender<AppTaskEvent>,
     ) -> TrackedTaskResult {
         // spawn all trees
-        let mut run_ctx = RunContext::new(&task_tracker, &arg, !arg.read_only).await?;
+        let mut run_ctx =
+            RunContext::new(&task_tracker, &arg, !arg.read_only, Some(config)).await?;
 
         // wait for tree walk completion
         for tree in &mut run_ctx.trees {
@@ -240,6 +263,7 @@ impl App {
         self.task_tracker.spawn(Self::init_task(
             self.task_tracker.clone(),
             self.arg.clone(),
+            self.config.clone(),
             self.task_event_sender.clone(),
         ))?;
 

@@ -220,7 +220,6 @@ fn list_snaps_stdout_exit_on_error(cfg: &ConfigCtx) -> anyhow::Result<()> {
 mod tests {
 
     use super::*;
-    use crate::config::ConfigCtx;
     use crate::config::tests::load_ut_cfg;
     use crate::proto::MetadataSnap;
 
@@ -240,7 +239,7 @@ mod tests {
 
         // load config, patched to point to temp dir
         let config = load_ut_cfg().unwrap();
-        let mut cfg = ConfigCtx::from_config_file(config, Some("data"))?;
+        let mut cfg = config.extract(Some("data"))?;
         cfg.local_metadata_snap_path_user = temp_dir.path().to_path_buf();
 
         let source_path = "/my/source/path";

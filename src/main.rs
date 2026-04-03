@@ -11,7 +11,7 @@ use std::sync::{Arc, MutexGuard};
 use clap::Parser as _;
 use prost_types::Timestamp;
 
-use crate::config::{Config, ConfigCtx, ConfigRef};
+use crate::config::{Config, ConfigRef};
 use crate::diff::DiffMode;
 use crate::generic::fs::{MessageExt as _, PathExt as _};
 use crate::generic::libc::reset_sigpipe;
@@ -201,7 +201,8 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
                 "ListMetadataSnap mode: expects no extra argument"
             );
             let config = Config::from_file(None)?;
-            let config = Arc::new(ConfigCtx::from_config_file(config, None)?);
+            let config = config.extract(arg.profile.as_deref())?;
+            let config = Arc::new(config);
             list_snaps_stdout(&config);
             Ok(std::process::ExitCode::SUCCESS)
         }
@@ -279,7 +280,7 @@ async fn diff_main(task_tracker: TaskTracker, arg: Arg, mode: DiffMode) -> Track
     );
 
     // spawn all trees
-    let mut ctx = RunContext::new(&task_tracker, &arg, false).await?;
+    let mut ctx = RunContext::new(&task_tracker, &arg, false, None).await?;
     // wait for tree walk completion
     for tree in &mut ctx.trees {
         tree.wait_for_tree().await?;
@@ -322,7 +323,7 @@ async fn sync_main(task_tracker: TaskTracker, arg: Arg) -> TrackedTaskResult {
     let mut exit_code = TaskExit::MainTaskStopAppSuccess;
 
     // spawn all trees
-    let mut ctx = RunContext::new(&task_tracker, &arg, true).await?;
+    let mut ctx = RunContext::new(&task_tracker, &arg, true, None).await?;
     // wait for tree walk completion
     for tree in &mut ctx.trees {
         tree.wait_for_tree().await?;
@@ -384,7 +385,7 @@ async fn refresh_metadata_snap(task_tracker: TaskTracker, arg: Arg) -> TrackedTa
         "RefreshMetadataSnap mode: expects a single directory"
     );
 
-    let mut ctx = RunContext::new(&task_tracker, &arg, false).await?;
+    let mut ctx = RunContext::new(&task_tracker, &arg, false, None).await?;
     ctx.trees[0].wait_for_tree().await?;
     ctx.save_snaps_and_terminate(false).await;
 
@@ -404,9 +405,19 @@ struct RunContext {
 }
 
 impl RunContext {
-    async fn new(task_tracker: &TaskTracker, arg: &Arg, sync_mode: bool) -> anyhow::Result<Self> {
-        let config = Config::from_file(None)?;
-        let config = Arc::new(ConfigCtx::from_config_file(config, arg.profile.as_deref())?);
+    async fn new(
+        task_tracker: &TaskTracker,
+        arg: &Arg,
+        sync_mode: bool,
+        config: Option<ConfigRef>,
+    ) -> anyhow::Result<Self> {
+        let config = if let Some(config) = config {
+            config
+        } else {
+            let config = Config::from_file(None)?;
+            let config = config.extract(arg.profile.as_deref())?;
+            Arc::new(config)
+        };
         let ts = Timestamp::now();
 
         let mut instance = Self {

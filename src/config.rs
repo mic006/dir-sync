@@ -52,6 +52,59 @@ impl Config {
             .with_context(|| format!("failed to read config file at '{}'", path.display()))?;
         Self::from_str(&config_str)
     }
+
+    /// Get configuration context from configuration file
+    ///
+    /// # Errors
+    /// * invalid profile (profile not found, or include profile not found)
+    pub fn extract(self, profile: Option<&str>) -> anyhow::Result<ConfigCtx> {
+        Ok(self.extract_tui(profile)?.0)
+    }
+
+    /// Get configuration context from configuration file
+    ///
+    /// # Errors
+    /// * invalid profile (profile not found, or include profile not found)
+    pub fn extract_tui(mut self, profile: Option<&str>) -> anyhow::Result<(ConfigCtx, TuiConfig)> {
+        let local_metadata_snap_path_user = self
+            .local_metadata_snap_path
+            .join(std::env::var("USER").unwrap_or_else(|_| String::from("nobody")));
+
+        let mut filter_ignore_name = vec![];
+        let mut filter_ignore_path = vec![];
+        let mut filter_white_list = vec![];
+
+        if let Some(profile) = profile {
+            let mut profiles = vec![profile.to_string()];
+
+            while let Some(prof_name) = profiles.pop() {
+                let Some(mut prof_data) = self.profiles.remove(&prof_name) else {
+                    anyhow::bail!("config error: invalid reference to profile '{prof_name}'");
+                };
+                profiles.extend(prof_data.include.iter().map(ToOwned::to_owned));
+                filter_ignore_name.append(&mut prof_data.ignore_name);
+                filter_ignore_path.append(&mut prof_data.ignore_path);
+                filter_white_list.extend(
+                    prof_data
+                        .white_list
+                        .iter()
+                        .map(|pattern| path_regex::add_rel_path_prefix(pattern)),
+                );
+            }
+        }
+
+        let mut config_ctx = ConfigCtx {
+            local_metadata_snap_path_user,
+            perf_data_buffer_size: self.performance.data_buffer_size.as_nb_bytes(),
+            perf_fs_queue_size: self.performance.fs_queue_size,
+            filter_ignore_name,
+            filter_ignore_path,
+            filter_white_list,
+            file_matcher: None,
+        };
+        config_ctx.add_file_matcher()?;
+        Ok((config_ctx, self.tui))
+    }
 }
 impl FromStr for Config {
     type Err = anyhow::Error;
@@ -164,51 +217,6 @@ pub struct ConfigCtx {
 }
 
 impl ConfigCtx {
-    /// Get configuration context from configuration file
-    ///
-    /// # Errors
-    /// * invalid profile (profile not found, or include profile not found)
-    pub fn from_config_file(mut config: Config, profile: Option<&str>) -> anyhow::Result<Self> {
-        let local_metadata_snap_path_user = config
-            .local_metadata_snap_path
-            .join(std::env::var("USER").unwrap_or_else(|_| String::from("nobody")));
-
-        let mut filter_ignore_name = vec![];
-        let mut filter_ignore_path = vec![];
-        let mut filter_white_list = vec![];
-
-        if let Some(profile) = profile {
-            let mut profiles = vec![profile.to_string()];
-
-            while let Some(prof_name) = profiles.pop() {
-                let Some(mut prof_data) = config.profiles.remove(&prof_name) else {
-                    anyhow::bail!("config error: invalid reference to profile '{prof_name}'");
-                };
-                profiles.extend(prof_data.include.iter().map(ToOwned::to_owned));
-                filter_ignore_name.append(&mut prof_data.ignore_name);
-                filter_ignore_path.append(&mut prof_data.ignore_path);
-                filter_white_list.extend(
-                    prof_data
-                        .white_list
-                        .iter()
-                        .map(|pattern| path_regex::add_rel_path_prefix(pattern)),
-                );
-            }
-        }
-
-        let mut instance = Self {
-            local_metadata_snap_path_user,
-            perf_data_buffer_size: config.performance.data_buffer_size.as_nb_bytes(),
-            perf_fs_queue_size: config.performance.fs_queue_size,
-            filter_ignore_name,
-            filter_ignore_path,
-            filter_white_list,
-            file_matcher: None,
-        };
-        instance.add_file_matcher()?;
-        Ok(instance)
-    }
-
     /// Get configuration context from configuration provided by master
     ///
     /// # Errors
@@ -300,7 +308,7 @@ pub mod tests {
     #[allow(clippy::missing_errors_doc)]
     pub fn load_ut_cfg_ctx() -> anyhow::Result<Arc<ConfigCtx>> {
         let config = Config::from_file(Some(Path::new("src/test/ut_config.yaml")))?;
-        Ok(Arc::new(ConfigCtx::from_config_file(config, Some("data"))?))
+        Ok(Arc::new(config.extract(Some("data"))?))
     }
 
     #[test]
@@ -350,7 +358,7 @@ pub mod tests {
     #[test]
     fn test_config_ctx_from_cfg_file() {
         let config = Config::from_file(Some(Path::new("src/test/ut_config.yaml"))).unwrap();
-        let config = ConfigCtx::from_config_file(config, Some("data")).unwrap();
+        let config = config.extract(Some("data")).unwrap();
         assert_eq!(
             config.local_metadata_snap_path_user,
             PathBuf::from("/invalid/path").join(std::env::var("USER").unwrap())
@@ -378,16 +386,16 @@ pub mod tests {
 
     #[test]
     fn test_config_ctx_from_cfg_file_profile_none() {
-        let cfg = load_ut_cfg().unwrap();
-        let cfg = ConfigCtx::from_config_file(cfg, None).unwrap();
-        assert!(cfg.file_matcher.is_none());
+        let config = load_ut_cfg().unwrap();
+        let config = config.extract(None).unwrap();
+        assert!(config.file_matcher.is_none());
     }
 
     #[test]
     fn test_config_ctx_from_cfg_file_profile_invalid() {
-        let cfg = load_ut_cfg().unwrap();
-        let cfg = ConfigCtx::from_config_file(cfg, Some("unknown"));
-        assert!(cfg.is_err());
+        let config = load_ut_cfg().unwrap();
+        let config = config.extract(Some("unknown"));
+        assert!(config.is_err());
     }
 
     #[test]
