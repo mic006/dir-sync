@@ -27,6 +27,11 @@ pub struct AppTheme {
 }
 
 impl AppTheme {
+    /// Load theme from file
+    ///
+    /// # Errors
+    /// - invalid path
+    /// - invalid theme file
     pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
         let theme_str = if let Some(path) = path {
             std::fs::read_to_string(path)

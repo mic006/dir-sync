@@ -33,7 +33,7 @@ impl Widget for &mut App {
 impl App {
     /// Render normal screen
     fn render_screen_normal(&mut self, area: Rect, buf: &mut Buffer) {
-        let (fill_factor_list, fill_factor_content) = self.theme.fill_factors();
+        let (fill_factor_list, fill_factor_content) = self.config_tui.theme.fill_factors();
 
         let [top_bar_area, list_area, middle_bar_area, content_area] = Layout::vertical([
             Constraint::Length(1),
@@ -66,7 +66,7 @@ impl App {
     /// - `View::Diff`: nothing
     /// - `View::Sync*`: shortcut keys for view with highlight of active view
     fn render_screen_normal_top_bar(&self, area: Rect, buf: &mut Buffer) {
-        let bar_style = self.theme.bar_style();
+        let bar_style = self.config_tui.theme.bar_style();
 
         let title = if self.view.is_diff() {
             " dir-diff "
@@ -82,7 +82,7 @@ impl App {
         .areas(area);
 
         // middle
-        Line::styled(title, self.theme.bar_title_style()).render(middle_area, buf);
+        Line::styled(title, self.config_tui.theme.bar_title_style()).render(middle_area, buf);
 
         // left side
         let left_str = match self.view {
@@ -124,7 +124,7 @@ impl App {
             .into_iter()
             .flat_map(|(view, key, desc)| {
                 let view_style = if view == self.view {
-                    self.theme.bar_active_view_style()
+                    self.config_tui.theme.bar_active_view_style()
                 } else {
                     bar_style
                 };
@@ -133,7 +133,7 @@ impl App {
                     Span::styled(" ", view_style),
                     Span::styled(
                         key,
-                        view_style.patch(self.theme.bar_key_stroke_style_patch()),
+                        view_style.patch(self.config_tui.theme.bar_key_stroke_style_patch()),
                     ),
                     Span::styled(" ", view_style),
                     Span::styled(desc, view_style),
@@ -161,9 +161,9 @@ impl App {
             // render content
             for (i, row) in std::iter::zip(context.list_panel.view_range(), area.rows()) {
                 let style = if i == context.list_panel.selected {
-                    self.theme.diff_list_selected_item_style()
+                    self.config_tui.theme.diff_list_selected_item_style()
                 } else {
-                    self.theme.content_style()
+                    self.config_tui.theme.content_style()
                 };
                 let index = context.get_diff_entry_index(self.view, i);
                 let diff_entry = &context.diffs[index];
@@ -177,10 +177,13 @@ impl App {
                             if let Some(sync_source_index) = &diff_entry.sync_source_index {
                                 Span::styled(
                                     (sync_source_index + 1).to_string(),
-                                    self.theme.diff_list_sync_resolved_style_patch(),
+                                    self.config_tui.theme.diff_list_sync_resolved_style_patch(),
                                 )
                             } else {
-                                Span::styled("!", self.theme.diff_list_sync_conflict_style_patch())
+                                Span::styled(
+                                    "!",
+                                    self.config_tui.theme.diff_list_sync_conflict_style_patch(),
+                                )
                             },
                             Span::from(format!("] {diff_entry:}")),
                         ]
@@ -193,7 +196,7 @@ impl App {
             // render scroll bar on top of content
             if let Some(scroll) = context.list_panel.scroll_bar() {
                 // render scroll bar
-                let sb_style = self.theme.bar_scroll_bar_style();
+                let sb_style = self.config_tui.theme.bar_scroll_bar_style();
                 for (i, c) in scroll {
                     buf[(area.right() - 1, area.y + i as u16)]
                         .set_style(sb_style)
@@ -207,7 +210,7 @@ impl App {
     ///
     /// Name of each tree on top of its content area
     fn render_screen_normal_middle_bar(&self, area: Rect, buf: &mut Buffer) {
-        let bar_style = self.theme.bar_style();
+        let bar_style = self.config_tui.theme.bar_style();
         let areas = self.split_area_per_tree(area, buf);
         for (i, (area, dir)) in std::iter::zip(areas.iter(), self.arg.dirs.iter()).enumerate() {
             Line::styled(format!("#{} {dir}", i + 1), bar_style)
@@ -234,7 +237,7 @@ impl App {
             for tree_index in 0..nb_trees {
                 let (render_type, render_ctx) = context.get_content_renderer(tree_index, self.view);
                 let (diff_base_style, diff_highlight_style) =
-                    get_render_styles(&self.theme, render_type);
+                    get_render_styles(&self.config_tui.theme, render_type);
 
                 let [metadata_area, _content_area] = Layout::vertical([
                     Constraint::Length(NB_METADATA_LINES as u16),
@@ -276,7 +279,7 @@ impl App {
     ///
     /// Fill spacers with bar style
     fn split_area_per_tree(&self, area: Rect, buf: &mut Buffer) -> Rc<[Rect]> {
-        let bar_style = self.theme.bar_style();
+        let bar_style = self.config_tui.theme.bar_style();
         let (areas, spacers) =
             Layout::horizontal(std::iter::repeat_n(Constraint::Fill(1), self.nb_trees()))
                 .spacing(1)
@@ -315,9 +318,9 @@ impl App {
         // render help area
         Clear.render(help_area, buf);
         let help_block = Block::bordered()
-            .border_style(self.theme.help_border_style())
-            .border_type(self.theme.help_border_type())
-            .style(self.theme.content_style())
+            .border_style(self.config_tui.theme.help_border_style())
+            .border_type(self.config_tui.theme.help_border_type())
+            .style(self.config_tui.theme.content_style())
             .title(" Help ")
             .title_bottom(Line::from(" Any key to exit help screen ").right_aligned());
         let help_paragraph = Paragraph::new(self.format_help(&help.content)).block(help_block);
@@ -353,9 +356,9 @@ impl App {
         // render dialog area
         Clear.render(dialog_area, buf);
         let dialog_block = Block::bordered()
-            .border_style(self.theme.confirm_exit_border_style())
-            .border_type(self.theme.confirm_exit_border_type())
-            .style(self.theme.content_style())
+            .border_style(self.config_tui.theme.confirm_exit_border_style())
+            .border_type(self.config_tui.theme.confirm_exit_border_type())
+            .style(self.config_tui.theme.content_style())
             .padding(Padding::uniform(1))
             .title(" Exit ? ")
             .title_bottom(Self::format_button(button_sync).left_aligned())
@@ -408,8 +411,8 @@ impl App {
             Effect::None => Style::default(),
             Effect::Bold => Style::default().add_modifier(Modifier::BOLD),
             Effect::Italic => Style::default().add_modifier(Modifier::ITALIC),
-            Effect::Code => self.theme.help_key_stroke_style(),
-            Effect::Highlight => self.theme.help_highlight_style(),
+            Effect::Code => self.config_tui.theme.help_key_stroke_style(),
+            Effect::Highlight => self.config_tui.theme.help_highlight_style(),
         };
         Span::styled(txt.text.as_str(), style)
     }

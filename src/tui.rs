@@ -3,12 +3,10 @@
 // allow cast for screen size (u16)
 #![allow(clippy::cast_possible_truncation)]
 
-use std::sync::Arc;
-
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt as _;
 
-use crate::config::{Config, ConfigRef, TuiConfig};
+use crate::config::{Config, ConfigRef, TuiConfigRef};
 use crate::diff::{DiffEntry, DiffMode};
 use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
 use crate::sync_exec::SyncStat;
@@ -17,7 +15,6 @@ use crate::{Arg, RunContext};
 
 use diff_context::DiffContext;
 use list_panel::ListPanelMove;
-use theme::AppTheme;
 
 mod diff_context;
 mod help;
@@ -25,7 +22,7 @@ mod list_panel;
 mod render;
 mod rich_text;
 mod scroll_bar;
-mod theme;
+pub mod theme;
 
 /// Terminal UI entry point
 ///
@@ -42,7 +39,6 @@ pub async fn async_main_tui(arg: Arg) -> anyhow::Result<std::process::ExitCode> 
 
     let config = Config::from_file(None)?;
     let (config_ctx, config_tui) = config.extract_tui(arg.profile.as_deref())?;
-    let theme = AppTheme::load(config_tui.theme.as_deref())?;
 
     let task_tracker_main = TaskTrackerMain::default();
     task_tracker_main.setup_signal_catching()?;
@@ -50,9 +46,8 @@ pub async fn async_main_tui(arg: Arg) -> anyhow::Result<std::process::ExitCode> 
         task_tracker_main.tracker(),
         arg,
         exit_message_sender,
-        Arc::new(config_ctx),
+        config_ctx,
         config_tui,
-        theme,
     );
     task_tracker_main.spawn(app.task())?;
     let result = task_tracker_main.wait().await;
@@ -129,9 +124,7 @@ struct App {
     /// Core configuration
     config: ConfigRef,
     /// Terminal UI configuration
-    config_tui: TuiConfig,
-    /// Terminal UI theme
-    theme: AppTheme,
+    config_tui: TuiConfigRef,
     /// Indication that application shall run / exit
     running: bool,
     /// Redraw required on next event loop
@@ -160,8 +153,7 @@ impl App {
         mut arg: Arg,
         exit_message_sender: flume::Sender<String>,
         config: ConfigRef,
-        config_tui: TuiConfig,
-        theme: AppTheme,
+        config_tui: TuiConfigRef,
     ) -> Self {
         // use read-only mode if invoked as 'dir-diff'
         let invocation_name = std::env::args().next().expect("cannot get argv[0]");
@@ -176,7 +168,6 @@ impl App {
             arg,
             config,
             config_tui,
-            theme,
             running: true,
             redraw: true,
             screen: Screen::Normal,

@@ -219,8 +219,10 @@ fn list_snaps_stdout_exit_on_error(cfg: &ConfigCtx) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
 
+    use std::sync::Arc;
+
     use super::*;
-    use crate::config::tests::load_ut_cfg;
+    use crate::config::tests::load_ut_cfg_ctx;
     use crate::proto::MetadataSnap;
 
     #[test]
@@ -238,9 +240,10 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
 
         // load config, patched to point to temp dir
-        let config = load_ut_cfg().unwrap();
-        let mut cfg = config.extract(Some("data"))?;
-        cfg.local_metadata_snap_path_user = temp_dir.path().to_path_buf();
+        let mut cfg = load_ut_cfg_ctx()?;
+        Arc::get_mut(&mut cfg)
+            .unwrap()
+            .local_metadata_snap_path_user = temp_dir.path().to_path_buf();
 
         let source_path = "/my/source/path";
         let snap_access = SnapAccess::new(&cfg, source_path);

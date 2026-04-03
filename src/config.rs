@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -10,12 +11,16 @@ use serde::Deserialize;
 use crate::generic::config::field_mem_size::MemSize;
 use crate::generic::path_regex::{self, PathRegexBuilder};
 use crate::proto;
+use crate::tui::theme::AppTheme;
 
 /// Default configuration path
 pub const DEFAULT_CFG_PATH: &str = "/etc/dir-sync.conf.yaml";
 
 /// Configuration reference, shared between all objects (read-only access)
-pub type ConfigRef = std::sync::Arc<ConfigCtx>;
+pub type ConfigRef = Arc<ConfigCtx>;
+
+/// TUI Configuration reference, shared between all objects (read-only access)
+pub type TuiConfigRef = Arc<TuiConfigCtx>;
 
 /// Dir-sync configuration, deserialization of YAML config file
 #[derive(Deserialize, Debug, PartialEq)]
@@ -34,6 +39,9 @@ pub struct Config {
 
     /// Name of default profile, when profile is not specified on the command line
     default_profile: Option<String>,
+
+    /// Theme file for Terminal UI rendering
+    pub theme: Option<PathBuf>,
 
     /// Terminal UI related settings
     #[serde(default)]
@@ -57,15 +65,24 @@ impl Config {
     ///
     /// # Errors
     /// * invalid profile (profile not found, or include profile not found)
-    pub fn extract(self, profile: Option<&str>) -> anyhow::Result<ConfigCtx> {
-        Ok(self.extract_tui(profile)?.0)
+    pub fn extract(self, profile: Option<&str>) -> anyhow::Result<ConfigRef> {
+        Ok(self.extract_internal(profile, false)?.0)
     }
 
-    /// Get configuration context from configuration file
+    /// Get configuration context + TUI config context from configuration file
     ///
     /// # Errors
     /// * invalid profile (profile not found, or include profile not found)
-    pub fn extract_tui(mut self, profile: Option<&str>) -> anyhow::Result<(ConfigCtx, TuiConfig)> {
+    pub fn extract_tui(self, profile: Option<&str>) -> anyhow::Result<(ConfigRef, TuiConfigRef)> {
+        let (config, tui_config) = self.extract_internal(profile, true)?;
+        Ok((config, tui_config.unwrap()))
+    }
+
+    fn extract_internal(
+        mut self,
+        profile: Option<&str>,
+        tui_mode: bool,
+    ) -> anyhow::Result<(ConfigRef, Option<TuiConfigRef>)> {
         let local_metadata_snap_path_user = self
             .local_metadata_snap_path
             .join(std::env::var("USER").unwrap_or_else(|_| String::from("nobody")));
@@ -103,7 +120,18 @@ impl Config {
             file_matcher: None,
         };
         config_ctx.add_file_matcher()?;
-        Ok((config_ctx, self.tui))
+
+        let tui_config = if tui_mode {
+            let theme = AppTheme::load(self.theme.as_deref())?;
+            Some(Arc::new(TuiConfigCtx {
+                tui: self.tui,
+                theme,
+            }))
+        } else {
+            None
+        };
+
+        Ok((Arc::new(config_ctx), tui_config))
     }
 }
 impl FromStr for Config {
@@ -135,9 +163,6 @@ impl Default for PerformanceCfg {
 /// Terminal UI related settings
 #[derive(Deserialize, Debug, PartialEq)]
 pub struct TuiConfig {
-    /// Theme file for Terminal UI rendering
-    pub theme: Option<PathBuf>,
-
     /// Maximum file size to read and display content
     /// Note: must be <= `performance.data_buffer_size`
     content_max_size: MemSize,
@@ -145,7 +170,6 @@ pub struct TuiConfig {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            theme: None,
             content_max_size: MemSize::new(32 * 1024),
         }
     }
@@ -262,6 +286,12 @@ impl ConfigCtx {
     }
 }
 
+/// Terminal UI configuration context
+pub struct TuiConfigCtx {
+    pub tui: TuiConfig,
+    pub theme: AppTheme,
+}
+
 /// Determine name/paths to be ignored
 #[derive(Clone)]
 pub struct FileMatcher {
@@ -297,8 +327,6 @@ impl FileMatcher {
 
 #[cfg(test)]
 pub mod tests {
-    use std::sync::Arc;
-
     use super::*;
 
     #[allow(clippy::missing_errors_doc)]
@@ -306,9 +334,9 @@ pub mod tests {
         Config::from_file(Some(Path::new("src/test/ut_config.yaml")))
     }
     #[allow(clippy::missing_errors_doc)]
-    pub fn load_ut_cfg_ctx() -> anyhow::Result<Arc<ConfigCtx>> {
+    pub fn load_ut_cfg_ctx() -> anyhow::Result<ConfigRef> {
         let config = Config::from_file(Some(Path::new("src/test/ut_config.yaml")))?;
-        Ok(Arc::new(config.extract(Some("data"))?))
+        config.extract(Some("data"))
     }
 
     #[test]
@@ -347,8 +375,8 @@ pub mod tests {
                 ),
             ]),
             default_profile: None,
+            theme: Some(PathBuf::from("/path/to/theme/file")),
             tui: TuiConfig {
-                theme: Some(PathBuf::from("/path/to/theme/file")),
                 content_max_size: MemSize::new(16 * 1024),
             },
         };

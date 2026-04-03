@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::{Arc, MutexGuard};
+use std::sync::MutexGuard;
 
 use clap::Parser as _;
 use prost_types::Timestamp;
@@ -202,7 +202,6 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             );
             let config = Config::from_file(None)?;
             let config = config.extract(arg.profile.as_deref())?;
-            let config = Arc::new(config);
             list_snaps_stdout(&config);
             Ok(std::process::ExitCode::SUCCESS)
         }
@@ -415,8 +414,7 @@ impl RunContext {
             config
         } else {
             let config = Config::from_file(None)?;
-            let config = config.extract(arg.profile.as_deref())?;
-            Arc::new(config)
+            config.extract(arg.profile.as_deref())?
         };
         let ts = Timestamp::now();
 
