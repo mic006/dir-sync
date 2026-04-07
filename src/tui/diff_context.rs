@@ -1,5 +1,7 @@
 //! TUI application context for diff handling
 
+use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::config::TuiConfigRef;
@@ -54,6 +56,16 @@ pub enum ContentState {
     /// All trees have the same content
     SameContent,
 }
+impl ContentState {
+    /// Get number of lines to render content
+    fn nb_lines(&self) -> usize {
+        match self {
+            ContentState::Empty | ContentState::SameContent => 0,
+            ContentState::RenderMulti(m) => m.lines.len(),
+            _ => 1,
+        }
+    }
+}
 
 const METADATA_LINE_TYPE_SIZE: usize = 0;
 const METADATA_LINE_MTIME: usize = 1;
@@ -63,9 +75,15 @@ pub const NB_METADATA_LINES: usize = 3;
 type MetadataLines = [DiffLine; NB_METADATA_LINES];
 
 pub trait DiffEntryContextRender {
+    /// Get metadata lines for the given tree
     fn get_metadata(&self, tree_index: usize) -> &MetadataLines;
+    /// Get content for the given tree
     fn get_content(&self, tree_index: usize) -> &ContentState;
 
+    /// Get number of content lines (max of all trees)
+    fn get_content_nb_lines(&self) -> usize;
+
+    /// Set raw content for the given tree
     fn set_raw_content(&mut self, tree_index: usize, content: Vec<u8>);
 }
 
@@ -79,6 +97,8 @@ struct DiffEntryContextDiff {
     metadata: [MetadataLines; 2],
     /// Content for each tree category; None means same content for all trees
     content: Option<[ContentState; 2]>,
+    /// Number of lines to render content
+    content_nb_lines: usize,
 }
 impl DiffEntryContextRender for DiffEntryContextDiff {
     fn get_metadata(&self, tree_index: usize) -> &MetadataLines {
@@ -93,6 +113,10 @@ impl DiffEntryContextRender for DiffEntryContextDiff {
             })
     }
 
+    fn get_content_nb_lines(&self) -> usize {
+        self.content_nb_lines
+    }
+
     fn set_raw_content(&mut self, _tree_index: usize, _content: Vec<u8>) {
         todo!();
     }
@@ -104,6 +128,8 @@ struct DiffEntryContextConflict {
     metadata: Vec<MetadataLines>,
     /// Content for each tree; None means same content for all trees
     content: Option<Vec<ContentState>>,
+    /// Number of lines to render content
+    content_nb_lines: usize,
 }
 impl DiffEntryContextRender for DiffEntryContextConflict {
     fn get_metadata(&self, tree_index: usize) -> &MetadataLines {
@@ -114,6 +140,10 @@ impl DiffEntryContextRender for DiffEntryContextConflict {
         self.content
             .as_ref()
             .map_or(&ContentState::SameContent, |content| &content[tree_index])
+    }
+
+    fn get_content_nb_lines(&self) -> usize {
+        self.content_nb_lines
     }
 
     fn set_raw_content(&mut self, _tree_index: usize, _content: Vec<u8>) {
@@ -147,6 +177,22 @@ impl DiffEntryContext {
         matches!(self, DiffEntryContext::None)
     }
 }
+impl Deref for DiffEntryContext {
+    type Target = dyn DiffEntryContextRender;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            DiffEntryContext::None => {
+                panic!("context shall be created first by gen_entry_context()")
+            }
+            DiffEntryContext::ConflictAlways(diff_entry_context_conflict) => {
+                diff_entry_context_conflict
+            }
+            DiffEntryContext::Conflict(diff_entry_context_diff)
+            | DiffEntryContext::OldNewDiff(diff_entry_context_diff) => diff_entry_context_diff,
+        }
+    }
+}
 
 /// Application runtime context (displaying diffs)
 pub struct DiffContext {
@@ -166,6 +212,8 @@ pub struct DiffContext {
     /// Context for diff rendering, matching entries in `diffs`
     /// Items are determined on the first rendering
     entries_context: Vec<DiffEntryContext>,
+    /// Get `diffs` index from relpath
+    relpath_to_index: HashMap<String, usize>,
 }
 impl DiffContext {
     pub fn new(ctx: InitContext, config: TuiConfigRef) -> Self {
@@ -186,6 +234,13 @@ impl DiffContext {
         let mut entries_context = Vec::new();
         entries_context.resize_with(ctx.diffs.len(), Default::default);
 
+        let relpath_to_index = ctx
+            .diffs
+            .iter()
+            .enumerate()
+            .map(|(i, diff)| (diff.rel_path.clone(), i))
+            .collect();
+
         Self {
             run_ctx: ctx.run_ctx,
             config,
@@ -196,6 +251,7 @@ impl DiffContext {
             conflicts_indexes,
             resolved_indexes,
             entries_context,
+            relpath_to_index,
         }
     }
 
@@ -226,18 +282,50 @@ impl DiffContext {
 
     /// Update content panel with new selection
     fn on_selection_update(&mut self, view: View) {
-        let diff_index = self.get_diff_entry_index_selected(view);
-        if diff_index < self.diffs.len() && self.entries_context[diff_index].is_none() {
-            self.gen_entry_context(diff_index, !view.is_diff());
+        // get selected element
+        {
+            let diff_index = self.get_diff_entry_index_selected(view);
+            if diff_index < self.diffs.len() {
+                if self.entries_context[diff_index].is_none() {
+                    // first time: generate entry context
+                    self.gen_entry_context(diff_index, !view.is_diff());
+                }
+                // update content panel to display selected content
+                self.content_panel
+                    .reset(self.entries_context[diff_index].get_content_nb_lines());
+            }
+        }
+
+        // prefetch the next item in view if needed
+        {
+            let next_view_index: usize = (self.list_panel.selected + 1)
+                .min(self.list_panel.content_length.saturating_sub(1));
+            let next_diff_index = self.get_diff_entry_index(view, next_view_index);
+            if next_diff_index < self.diffs.len() && self.entries_context[next_diff_index].is_none()
+            {
+                self.gen_entry_context(next_diff_index, !view.is_diff());
+            }
         }
     }
 
     /// Get diff entry index for current view
     pub fn get_diff_entry_index(&self, view: View, view_index: usize) -> usize {
         match view {
-            View::Diff | View::SyncAll => view_index,
-            View::SyncConflicts => self.conflicts_indexes[view_index],
-            View::SyncResolved => self.resolved_indexes[view_index],
+            View::Diff | View::SyncAll => view_index.min(self.diffs.len().saturating_sub(1)),
+            View::SyncConflicts => {
+                if view_index < self.conflicts_indexes.len() {
+                    self.conflicts_indexes[view_index]
+                } else {
+                    0
+                }
+            }
+            View::SyncResolved => {
+                if view_index < self.resolved_indexes.iter().len() {
+                    self.resolved_indexes[view_index]
+                } else {
+                    0
+                }
+            }
             _ => unreachable!("context is invalid for the unhandled views"),
         }
     }
@@ -307,18 +395,18 @@ impl DiffContext {
     ) -> (RenderDiffType, &dyn DiffEntryContextRender) {
         let diff_index = self.get_diff_entry_index_selected(view);
         assert!(diff_index < self.diffs.len());
-        match &self.entries_context[diff_index] {
+        let diff_type = match &self.entries_context[diff_index] {
             DiffEntryContext::None => {
                 unreachable!("element shall be created by 'on_selection_update()'")
             }
-            DiffEntryContext::ConflictAlways(ctx) => (RenderDiffType::ConflictAlways, ctx),
-            DiffEntryContext::Conflict(ctx) => (RenderDiffType::ConflictDiff, ctx),
+            DiffEntryContext::ConflictAlways(_) => RenderDiffType::ConflictAlways,
+            DiffEntryContext::Conflict(_) => RenderDiffType::ConflictDiff,
             DiffEntryContext::OldNewDiff(ctx) => {
                 if view.is_diff() {
                     // diff mode: Categ::ZERO is old, Categ::ONE is new
                     match ctx.categ.get(tree_index) {
-                        Categ::ZERO => (RenderDiffType::Old, ctx),
-                        Categ::ONE => (RenderDiffType::New, ctx),
+                        Categ::ZERO => RenderDiffType::Old,
+                        Categ::ONE => RenderDiffType::New,
                     }
                 } else {
                     let diff_entry = &self.diffs[diff_index];
@@ -328,18 +416,19 @@ impl DiffContext {
                             || categ.get(tree_index) == categ.get(sync_source_index as usize)
                         {
                             // tree is source_index or has same content as source_index => new
-                            (RenderDiffType::New, ctx)
+                            RenderDiffType::New
                         } else {
                             // other content => old
-                            (RenderDiffType::Old, ctx)
+                            RenderDiffType::Old
                         }
                     } else {
                         // no sync action => conflict
-                        (RenderDiffType::ConflictDiff, ctx)
+                        RenderDiffType::ConflictDiff
                     }
                 }
             }
-        }
+        };
+        (diff_type, &*self.entries_context[diff_index])
     }
 
     /// Generate `DiffEntryContext` for one `DiffEntry`
@@ -421,9 +510,24 @@ impl DiffContext {
             .map(|tree_index| self.gen_entry_context_metadata(diff_index, tree_index, None))
             .collect::<Vec<_>>();
 
+        let diff_entry = &self.diffs[diff_index];
+        let content = diff_entry.diff.contains(DiffType::CONTENT).then(|| {
+            (0..self.nb_trees())
+                .map(|tree_index| self.gen_entry_context_content(diff_index, tree_index))
+                .collect::<Vec<_>>()
+        });
+        let content_nb_lines = content.as_ref().map_or(0, |content| {
+            content
+                .iter()
+                .map(ContentState::nb_lines)
+                .max()
+                .unwrap_or(0)
+        });
+
         DiffEntryContextConflict {
             metadata,
-            content: None,
+            content,
+            content_nb_lines,
         }
     }
 
@@ -435,6 +539,7 @@ impl DiffContext {
         let categ0_idx = categ.get_first(Categ::ZERO);
         let categ1_idx = categ.get_first(Categ::ONE);
         let diff_entry = &self.diffs[diff_index];
+        let content_is_different = diff_entry.diff.contains(DiffType::CONTENT);
 
         let [perm0, perm1] = if diff_entry.diff.contains(diff::DiffType::PERMISSIONS) {
             let perm0 =
@@ -451,10 +556,23 @@ impl DiffContext {
             self.gen_entry_context_metadata(diff_index, tree_index, perm)
         });
 
+        let content = content_is_different.then(|| {
+            [categ0_idx, categ1_idx]
+                .map(|tree_index| self.gen_entry_context_content(diff_index, tree_index))
+        });
+        let content_nb_lines = content.as_ref().map_or(0, |content| {
+            content
+                .iter()
+                .map(ContentState::nb_lines)
+                .max()
+                .unwrap_or(0)
+        });
+
         DiffEntryContextDiff {
             categ,
             metadata,
-            content: None,
+            content,
+            content_nb_lines,
         }
     }
 
