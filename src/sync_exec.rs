@@ -78,7 +78,7 @@ impl<'a> SyncExecCtx<'a> {
         let tree_senders = Arc::new(
             trees
                 .iter()
-                .map(|t| t.get_fs_action_requester())
+                .map(|t| t.get_fs_action_requester().clone())
                 .collect::<Vec<_>>(),
         );
         let act_update = std::iter::repeat_with(|| Vec::with_capacity(diff_entries.len()))
@@ -105,7 +105,7 @@ impl<'a> SyncExecCtx<'a> {
             let tree_receivers = self
                 .trees
                 .iter()
-                .map(|t| t.get_fs_action_responder())
+                .map(|t| t.get_fs_action_responder().clone())
                 .collect::<Vec<_>>();
             let tree_senders = self.tree_senders.clone();
             let file_data_ctx = self.file_data_ctx.clone();
@@ -419,12 +419,12 @@ mod tests {
             unreachable!("mock");
         }
 
-        fn get_fs_action_requester(&self) -> ActionReqSender {
-            self.tree_req_tx.clone()
+        fn get_fs_action_requester(&self) -> &ActionReqSender {
+            &self.tree_req_tx
         }
 
-        fn get_fs_action_responder(&self) -> ActionRspReceiver {
-            self.tree_rsp_rx.clone()
+        fn get_fs_action_responder(&self) -> &ActionRspReceiver {
+            &self.tree_rsp_rx
         }
 
         fn save_snap(&mut self, _sync: bool) {}

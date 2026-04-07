@@ -274,12 +274,12 @@ impl Tree for TreeRemote {
         Ok(output.snap.lock().unwrap())
     }
 
-    fn get_fs_action_requester(&self) -> ActionReqSender {
-        self.sender_act_req.clone()
+    fn get_fs_action_requester(&self) -> &ActionReqSender {
+        &self.sender_act_req
     }
 
-    fn get_fs_action_responder(&self) -> ActionRspReceiver {
-        self.receiver_act_rsp.clone()
+    fn get_fs_action_responder(&self) -> &ActionRspReceiver {
+        &self.receiver_act_rsp
     }
 
     fn save_snap(&mut self, sync: bool) {

@@ -72,7 +72,7 @@ pub async fn remote_main(task_tracker: TaskTracker) -> TrackedTaskResult {
     // 6. manage tree responses, forward to stdout
     let (event_sender, event_receiver) = flume::bounded(2);
     task_tracker.spawn({
-        let tree_action_response = tree.get_fs_action_responder();
+        let tree_action_response = tree.get_fs_action_responder().clone();
         async move {
             loop {
                 tokio::select! {
@@ -107,7 +107,7 @@ pub async fn remote_main(task_tracker: TaskTracker) -> TrackedTaskResult {
     })?;
 
     // 7. dispatch actions
-    let tree_action_sender = tree.get_fs_action_requester();
+    let tree_action_sender = tree.get_fs_action_requester().clone();
     loop {
         let req = remote_in.recv::<Request>().await?;
         match req.req {

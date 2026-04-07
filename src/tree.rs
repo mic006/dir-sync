@@ -24,10 +24,10 @@ pub trait Tree {
     fn get_root_entry(&self) -> anyhow::Result<MutexGuard<'_, MyDirEntry>>;
 
     /// Get sender to send FS action requests
-    fn get_fs_action_requester(&self) -> ActionReqSender;
+    fn get_fs_action_requester(&self) -> &ActionReqSender;
 
     /// Get receiver to get FS action responses
-    fn get_fs_action_responder(&self) -> ActionRspReceiver;
+    fn get_fs_action_responder(&self) -> &ActionRspReceiver;
 
     /// Save snap file
     ///
