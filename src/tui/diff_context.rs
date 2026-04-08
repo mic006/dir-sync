@@ -4,6 +4,9 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use futures::StreamExt as _;
+use futures::stream::{BoxStream, SelectAll};
+
 use crate::config::TuiConfigRef;
 use crate::diff::{self, DiffEntry, DiffType};
 use crate::generic::bitmap_categ::{BitmapCateg, Categ};
@@ -13,8 +16,9 @@ use crate::generic::format::permissions::format_file_type_and_permissions;
 use crate::generic::format::size::format_file_size;
 use crate::generic::format::timestamp::format_opt_ts;
 use crate::generic::str_diff::{DiffChunkType, DiffLine, DiffMultiline, diff_fixed_ascii_str};
-use crate::proto::action::FileReadReq;
-use crate::proto::{ActionReq, MyDirEntryExt as _, Specific, TimestampOrd as _};
+use crate::proto::{
+    ActionReq, ActionRsp, MyDirEntryExt as _, Specific, TimestampOrd as _, action::FileReadReq,
+};
 
 use super::RunContext;
 use super::list_panel::{ListPanel, ListPanelMove, ListPanelSelection};
@@ -214,6 +218,8 @@ pub struct DiffContext {
     entries_context: Vec<DiffEntryContext>,
     /// Get `diffs` index from relpath
     relpath_to_index: HashMap<String, usize>,
+    /// Incoming file content from trees
+    content_receiver: SelectAll<BoxStream<'static, (usize, ActionRsp)>>,
 }
 impl DiffContext {
     pub fn new(ctx: InitContext, config: TuiConfigRef) -> Self {
@@ -241,6 +247,20 @@ impl DiffContext {
             .map(|(i, diff)| (diff.rel_path.clone(), i))
             .collect();
 
+        let content_receiver = ctx
+            .run_ctx
+            .trees
+            .iter()
+            .enumerate()
+            .map(|(tree_index, tree)| {
+                tree.get_fs_action_responder()
+                    .clone()
+                    .into_stream()
+                    .map(move |event| (tree_index, event))
+                    .boxed()
+            })
+            .collect();
+
         Self {
             run_ctx: ctx.run_ctx,
             config,
@@ -252,7 +272,15 @@ impl DiffContext {
             resolved_indexes,
             entries_context,
             relpath_to_index,
+            content_receiver,
         }
+    }
+
+    /// Handle incoming file content responses from trees
+    pub async fn handle_received_content(&mut self) {
+        let (tree_index, event) = self.content_receiver.next().await.unwrap();
+
+        log::debug!("Received {event:?} from tree {tree_index}");
     }
 
     pub fn set_view(&mut self, view: View) {

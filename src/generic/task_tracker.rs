@@ -41,7 +41,7 @@ type TaskJoinHandle = JoinHandle<TrackedTaskResult>;
 /// 1. Wrap the conditional future in an Option<>: Some(fut) when future is valid, None, when invalid
 /// 2. In `tokio::select!`, use the following branch: `Some(r) = option_wait(opt_fut) => ...`
 ///
-async fn option_wait<F>(opt_fut: Option<F>) -> Option<F::Output>
+pub async fn option_wait<F>(opt_fut: Option<F>) -> Option<F::Output>
 where
     F: Future,
 {

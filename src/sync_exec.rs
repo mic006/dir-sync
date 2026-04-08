@@ -10,7 +10,7 @@ use futures::stream::SelectAll;
 use crate::diff::{self, DiffEntry};
 use crate::generic::task_tracker::{TaskExit, TaskTracker};
 use crate::proto::{
-    ActionReq, MyDirEntry, MyDirEntryExt as _, PROTO_NULL_VALUE, Specific,
+    ActionReq, ActionRsp, MyDirEntry, MyDirEntryExt as _, PROTO_NULL_VALUE, Specific,
     action::{DeleteEntryReq, FileReadReq, FileWriteReq, UpdateMetadataReq},
 };
 use crate::tree::{ActionReqSender, ActionRspReceiver, Tree};
@@ -313,14 +313,14 @@ impl<'a> SyncExecCtx<'a> {
 
         while let Some((src_idx, event)) = combined_stream.next().await {
             match event {
-                crate::proto::ActionRsp::EndMarker(_) => {
+                ActionRsp::EndMarker(_) => {
                     log::debug!("sync_exec[{}]: end_marker received", src_idx + 1);
                     end_marker_notif_sender.send_async(src_idx).await?;
                 }
-                crate::proto::ActionRsp::Error(error_rsp) => {
+                ActionRsp::Error(error_rsp) => {
                     log::warn!("sync_exec[{}]: {error_rsp:?}", src_idx + 1);
                 }
-                crate::proto::ActionRsp::FileData(file_read_rsp) => {
+                ActionRsp::FileData(file_read_rsp) => {
                     // prepare data write request
                     let file_ctx = file_data_ctx.get(&file_read_rsp.rel_path).unwrap();
                     let file_size = {
@@ -391,9 +391,9 @@ mod tests {
         tree_req_tx: flume::Sender<Arc<ActionReq>>,
 
         // Channel to send responses to sync_exec (simulating tree response)
-        test_rsp_tx: flume::Sender<crate::proto::ActionRsp>,
+        test_rsp_tx: flume::Sender<ActionRsp>,
         // Channel to give to sync_exec (via get_fs_action_responder)
-        tree_rsp_rx: flume::Receiver<crate::proto::ActionRsp>,
+        tree_rsp_rx: flume::Receiver<ActionRsp>,
     }
 
     impl MockTree {
@@ -496,7 +496,7 @@ mod tests {
         if let ActionReq::EndMarker(_) = &*req {
             // Send back end marker response
             t1_rsp_tx
-                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
                 .await?;
         } else {
             panic!("Expected EndMarker on tree1, got {req:?}");
@@ -507,7 +507,7 @@ mod tests {
         if let ActionReq::EndMarker(_) = &*req {
             // Send back end marker response
             t2_rsp_tx
-                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
                 .await?;
         } else {
             panic!("Expected EndMarker on tree2, got {req:?}");
@@ -562,13 +562,11 @@ mod tests {
 
         // Send FileData back from tree1
         t1_rsp_tx
-            .send_async(crate::proto::ActionRsp::FileData(
-                crate::proto::action::FileReadRsp {
-                    rel_path: "file.txt".to_string(),
-                    offset: 0,
-                    data: b"hello".to_vec(),
-                },
-            ))
+            .send_async(ActionRsp::FileData(crate::proto::action::FileReadRsp {
+                rel_path: "file.txt".to_string(),
+                offset: 0,
+                data: b"hello".to_vec(),
+            }))
             .await?;
 
         // Expect CreateUpdateFile on tree2
@@ -586,7 +584,7 @@ mod tests {
         let req = t1_req_rx.recv_async().await?;
         if let ActionReq::EndMarker(_) = &*req {
             t1_rsp_tx
-                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
                 .await?;
         } else {
             panic!("Expected EndMarker on tree1, got {req:?}");
@@ -596,7 +594,7 @@ mod tests {
         let req = t2_req_rx.recv_async().await?;
         if let ActionReq::EndMarker(_) = &*req {
             t2_rsp_tx
-                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
                 .await?;
         } else {
             panic!("Expected EndMarker on tree2, got {req:?}");
@@ -706,7 +704,7 @@ mod tests {
         let req = t1_req_rx.recv_async().await?;
         if let ActionReq::EndMarker(_) = &*req {
             t1_rsp_tx
-                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
                 .await?;
         } else {
             panic!("Expected EndMarker on tree1, got {req:?}");
@@ -716,7 +714,7 @@ mod tests {
         let req = t2_req_rx.recv_async().await?;
         if let ActionReq::EndMarker(_) = &*req {
             t2_rsp_tx
-                .send_async(crate::proto::ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
                 .await?;
         } else {
             panic!("Expected EndMarker on tree2, got {req:?}");

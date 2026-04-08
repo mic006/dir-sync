@@ -12,7 +12,7 @@ repository = "https://github.com/mic006/dir-sync"
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 async-trait = "0.1.89"
 bitflags = "2.11.0"
-blake3 = { version = "1.8.3", features = ["mmap", "rayon"] }
+blake3 = { version = "1.8.4", features = ["mmap", "rayon"] }
 bytes = "1.11.1"
 clap = { version = "4.6.0", features = ["derive"] }
 crossterm = { version = "0.29.0", default-features = false, features = [
@@ -23,7 +23,7 @@ dissimilar = "1.0.11"
 env_logger = "0.11.10"
 flume = "0.12.0"
 futures = "0.3.32"
-libc = "0.2.183"
+libc = "0.2.184"
 log = "0.4.29"
 memmap2 = "0.9.10"
 prost = "0.14.3"
@@ -36,7 +36,7 @@ rayon = "1.11.0"
 regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9.34"
-tokio = { version = "1.50.0", features = ["full"] }
+tokio = { version = "1.51.0", features = ["full"] }
 unicode-width = { version = "0.2.2", default-features = false }
 zstd = "0.13.3"
 

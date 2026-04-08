@@ -8,7 +8,9 @@ use futures::StreamExt as _;
 
 use crate::config::{Config, ConfigRef, TuiConfigRef};
 use crate::diff::{DiffEntry, DiffMode};
-use crate::generic::task_tracker::{TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult};
+use crate::generic::task_tracker::{
+    TaskExit, TaskTracker, TaskTrackerMain, TrackedTaskResult, option_wait,
+};
 use crate::sync_exec::SyncStat;
 use crate::sync_plan::SyncMode;
 use crate::{Arg, RunContext};
@@ -268,9 +270,16 @@ impl App {
                 self.redraw = false;
             }
 
+            // handle incoming file content responses from trees
+            let handle_received_content = self
+                .context
+                .as_mut()
+                .map(DiffContext::handle_received_content);
+
             tokio::select! {
                 Some(events) = terminal_events.next() => self.handle_terminal_event(events),
                 Ok(event) = self.task_event_receiver.recv_async() => self.handle_task_event(event),
+                Some(()) = option_wait(handle_received_content) => self.redraw = true,
             };
         }
 
