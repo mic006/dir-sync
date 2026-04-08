@@ -408,12 +408,42 @@ impl App {
                 // do sync operations
                 self.start_sync();
             }
-            KeyCode::Home => self.handle_key_diff_nav(ListPanelMove::Start),
-            KeyCode::End => self.handle_key_diff_nav(ListPanelMove::End),
-            KeyCode::PageUp => self.handle_key_diff_nav(ListPanelMove::PageUp),
-            KeyCode::PageDown => self.handle_key_diff_nav(ListPanelMove::PageDown),
-            KeyCode::Up => self.handle_key_diff_nav(ListPanelMove::LineUp),
-            KeyCode::Down => self.handle_key_diff_nav(ListPanelMove::LineDown),
+            KeyCode::Home if key_event.modifiers == KeyModifiers::NONE => {
+                self.handle_key_diff_nav(ListPanelMove::Start);
+            }
+            KeyCode::End if key_event.modifiers == KeyModifiers::NONE => {
+                self.handle_key_diff_nav(ListPanelMove::End);
+            }
+            KeyCode::PageUp if key_event.modifiers == KeyModifiers::NONE => {
+                self.handle_key_diff_nav(ListPanelMove::PageUp);
+            }
+            KeyCode::PageDown if key_event.modifiers == KeyModifiers::NONE => {
+                self.handle_key_diff_nav(ListPanelMove::PageDown);
+            }
+            KeyCode::Up if key_event.modifiers == KeyModifiers::NONE => {
+                self.handle_key_diff_nav(ListPanelMove::LineUp);
+            }
+            KeyCode::Down if key_event.modifiers == KeyModifiers::NONE => {
+                self.handle_key_diff_nav(ListPanelMove::LineDown);
+            }
+            KeyCode::Home if key_event.modifiers == KeyModifiers::SHIFT => {
+                self.handle_key_content_nav(ListPanelMove::Start);
+            }
+            KeyCode::End if key_event.modifiers == KeyModifiers::SHIFT => {
+                self.handle_key_content_nav(ListPanelMove::End);
+            }
+            KeyCode::PageUp if key_event.modifiers == KeyModifiers::SHIFT => {
+                self.handle_key_content_nav(ListPanelMove::PageUp);
+            }
+            KeyCode::PageDown if key_event.modifiers == KeyModifiers::SHIFT => {
+                self.handle_key_content_nav(ListPanelMove::PageDown);
+            }
+            KeyCode::Up if key_event.modifiers == KeyModifiers::SHIFT => {
+                self.handle_key_content_nav(ListPanelMove::LineUp);
+            }
+            KeyCode::Down if key_event.modifiers == KeyModifiers::SHIFT => {
+                self.handle_key_content_nav(ListPanelMove::LineDown);
+            }
             KeyCode::Char(c)
                 if c.is_ascii_digit() && self.view.are_diffs_rendered() && !self.view.is_diff() =>
             {
@@ -427,6 +457,14 @@ impl App {
     fn handle_key_diff_nav(&mut self, event: ListPanelMove) {
         if let Some(context) = &mut self.context {
             context.update_list_panel(self.view, event);
+            self.redraw = true;
+        }
+    }
+
+    /// Manage navigation keys for content panel
+    fn handle_key_content_nav(&mut self, event: ListPanelMove) {
+        if let Some(context) = &mut self.context {
+            context.content_panel.handle(event);
             self.redraw = true;
         }
     }
