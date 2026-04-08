@@ -10,9 +10,12 @@ use ratatui::{
     widgets::{Block, Clear, Padding, Paragraph, Widget},
 };
 
-use crate::generic::str_diff::{DiffChunk, DiffChunkType, DiffLine};
+use crate::generic::str_diff::{DiffChunk, DiffChunkType, DiffLine, DiffLineNum};
 
-use super::diff_context::{DiffEntryContextRender, NB_METADATA_LINES, RenderDiffType};
+use super::diff_context::{
+    ContentState, DiffEntryContextRender, NB_METADATA_LINES, RenderDiffType,
+};
+use super::list_panel::ListPanel;
 use super::rich_text::{Effect, RichSpan, RichText};
 use super::theme::AppTheme;
 use super::{App, View, help};
@@ -231,15 +234,15 @@ impl App {
         if let Some(context) = &mut self.context
             && context.list_panel.content_length > 0
         {
-            context.content_panel.content_length = 10; // TODO: remove
             context.content_panel.normalize(area.height.into());
 
             for tree_index in 0..nb_trees {
-                let (render_type, render_ctx) = context.get_content_renderer(tree_index, self.view);
+                let (render_type, render_ctx, content_panel) =
+                    context.get_content_renderer(tree_index, self.view);
                 let (diff_base_style, diff_highlight_style) =
                     get_render_styles(&self.config_tui.theme, render_type);
 
-                let [metadata_area, _content_area] = Layout::vertical([
+                let [metadata_area, content_area] = Layout::vertical([
                     Constraint::Length(NB_METADATA_LINES as u16),
                     Constraint::Fill(1),
                 ])
@@ -253,6 +256,19 @@ impl App {
                     metadata_area,
                     buf,
                 );
+
+                if content_area.height > 0 {
+                    Self::render_screen_normal_content_content(
+                        render_ctx,
+                        content_panel,
+                        diff_highlight_style,
+                        self.config_tui.theme.diff_content_info_style(),
+                        self.config_tui.theme.diff_content_line_num_style(),
+                        tree_index,
+                        content_area,
+                        buf,
+                    );
+                }
             }
         }
     }
@@ -273,6 +289,78 @@ impl App {
                 .centered()
                 .render(row, buf);
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_screen_normal_content_content(
+        render_ctx: &dyn DiffEntryContextRender,
+        content_panel: &ListPanel,
+        diff_highlight_style: Style,
+        info_style: Style,
+        line_num_style: Style,
+        tree_index: usize,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let content = render_ctx.get_content(tree_index);
+
+        if let ContentState::RenderMulti(multiline) = content {
+            // multi line rendering
+            let line_num_length = (content_panel.content_length + 1).to_string().len();
+            for (i, row) in std::iter::zip(content_panel.view_range(), area.rows()) {
+                if i < multiline.lines.len() {
+                    let line = match &multiline.lines[i] {
+                        DiffLineNum::Padding => Line::from(Span::styled(
+                            format!("{:>line_num_length$}│", "-"),
+                            line_num_style,
+                        )),
+                        DiffLineNum::Line { line_num, line } => {
+                            let mut spans = Vec::with_capacity(line.0.len() + 1);
+                            spans.push(Span::styled(
+                                format!("{line_num:line_num_length$}│"),
+                                line_num_style,
+                            ));
+                            spans.extend(
+                                line.0
+                                    .iter()
+                                    .map(|chunk| span_diff_style(chunk, diff_highlight_style)),
+                            );
+                            Line::from(spans)
+                        }
+                    };
+                    line.render(row, buf);
+                }
+            }
+        } else if content_panel.view_start == 0 {
+            // single line rendering, with first content line in the view range
+            let first_row = area.rows().next().unwrap();
+            match content {
+                ContentState::RenderMulti(_) => unreachable!("handled above"),
+                ContentState::Empty | ContentState::SameContent => {} // nothing to render
+                ContentState::RenderSingle(s) => {
+                    Line::from(Span::styled(s, diff_highlight_style)).render(first_row, buf);
+                }
+                ContentState::Waiting(_) | ContentState::Str(_) => {
+                    // waiting for file content
+                    Line::from(Span::styled("Loading file content…", info_style))
+                        .render(first_row, buf);
+                }
+                ContentState::TooBig(s) => {
+                    line_info("Big file with hash ", s, info_style, diff_highlight_style)
+                        .render(first_row, buf);
+                }
+                ContentState::Binary(s) => {
+                    line_info(
+                        "Binary file with hash ",
+                        s,
+                        info_style,
+                        diff_highlight_style,
+                    )
+                    .render(first_row, buf);
+                }
+            }
+        }
+        // else: out of view range, nothing to render
     }
 
     /// Split one area into sub-area, one for each tree
@@ -458,4 +546,20 @@ fn line_diff_style(line: &DiffLine, highlight_style: Style) -> Line<'_> {
             .map(|chunk| span_diff_style(chunk, highlight_style))
             .collect::<Vec<_>>(),
     )
+}
+
+/// Create `Line` with info and hash, applying different styles
+fn line_info<'a>(
+    info: &'static str,
+    hash: &'a str,
+    info_style: Style,
+    highlight_style: Style,
+) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(info, info_style),
+        Span::styled(
+            format!("{}…{}", &hash[0..4], &hash[(hash.len() - 4)..]),
+            highlight_style,
+        ),
+    ])
 }

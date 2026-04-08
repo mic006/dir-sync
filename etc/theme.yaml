@@ -51,6 +51,8 @@ diff_content:
   line_num:
     #fg: "#9E9E9E" # md2.gray.500
     effect: dim
+  info:
+    fg: "#039BE5" # md2.light_blue.600
 
 help:
   border_style:

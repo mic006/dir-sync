@@ -136,7 +136,6 @@ impl DiffEntryContextRender for DiffEntryContextDiff {
                 Ok(s) => ContentState::Str(s),
                 Err(()) => ContentState::Binary(hash),
             };
-            self.content_nb_lines = self.content_nb_lines.max(content_state.nb_lines());
         }
 
         // compare content if possible
@@ -149,19 +148,22 @@ impl DiffEntryContextRender for DiffEntryContextDiff {
                     content_state[0] = ContentState::RenderMulti(d0);
                     content_state[1] = ContentState::RenderMulti(d1);
                 }
-                (ContentState::Str(s0), ContentState::Binary(_)) => {
-                    // string vs binary => render string as all diff
+                (ContentState::Waiting(_), _) | (_, ContentState::Waiting(_)) => {
+                    // waiting for some content => nothing to do
+                }
+                (ContentState::Str(s0), _) => {
+                    // string vs any => render string as all diff
                     content_state[0] = ContentState::RenderMulti(DiffMultiline::from(s0.as_str()));
                 }
-                (ContentState::Binary(_), ContentState::Str(s1)) => {
-                    // string vs binary => render string as all diff
+                (_, ContentState::Str(s1)) => {
+                    // string vs any => render string as all diff
                     content_state[1] = ContentState::RenderMulti(DiffMultiline::from(s1.as_str()));
                 }
                 _ => {
-                    // either 2 binaries, or one content not received yet
-                    // => nothing to do
+                    // 2 binaries => nothing to do
                 }
             }
+            self.content_nb_lines = content_state[0].nb_lines().max(content_state[1].nb_lines());
         }
     }
 }
@@ -364,6 +366,9 @@ impl DiffContext {
                         file_data.data,
                         &self.diff_engine,
                     );
+                    // update content panel to display selected content
+                    self.content_panel
+                        .reset(self.entries_context[*diff_index].get_content_nb_lines());
                 } else {
                     log::error!(
                         "invalid content received from tree #{}: unknown path {}",
@@ -523,7 +528,7 @@ impl DiffContext {
         &mut self,
         tree_index: usize,
         view: View,
-    ) -> (RenderDiffType, &dyn DiffEntryContextRender) {
+    ) -> (RenderDiffType, &dyn DiffEntryContextRender, &ListPanel) {
         let diff_index = self.get_diff_entry_index_selected(view);
         assert!(diff_index < self.diffs.len());
         let diff_type = match &self.entries_context[diff_index] {
@@ -559,7 +564,11 @@ impl DiffContext {
                 }
             }
         };
-        (diff_type, &*self.entries_context[diff_index])
+        (
+            diff_type,
+            &*self.entries_context[diff_index],
+            &self.content_panel,
+        )
     }
 
     /// Generate `DiffEntryContext` for one `DiffEntry`

@@ -17,9 +17,9 @@ pub enum ListPanelMove {
 /// Panel displaying a list, without selection
 pub struct ListPanel {
     /// Index of first visible item
-    view_start: usize,
+    pub view_start: usize,
     /// Number of visible items
-    view_length: usize,
+    pub view_length: usize,
     /// Number of items in the list
     pub content_length: usize,
 }

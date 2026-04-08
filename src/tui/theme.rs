@@ -147,6 +147,13 @@ impl AppTheme {
             .patch(Style::from(&self.diff_content.line_num))
     }
 
+    /// Get content info style
+    #[must_use]
+    pub fn diff_content_info_style(&self) -> Style {
+        self.content_style()
+            .patch(Style::from(&self.diff_content.info))
+    }
+
     /// Get border style for help screen
     #[must_use]
     pub fn help_border_style(&self) -> Style {
@@ -231,6 +238,7 @@ struct AppDiffContentTheme {
     conflict_fg: ThemeColor,
     conflict_bg: ThemeColor,
     line_num: ThemeStyle,
+    info: ThemeStyle,
 }
 
 /// Theme for Help screen
