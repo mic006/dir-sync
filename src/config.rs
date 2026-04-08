@@ -166,11 +166,15 @@ pub struct TuiConfig {
     /// Maximum file size to read and display content
     /// Note: must be <= `performance.data_buffer_size`
     pub content_max_size: MemSize,
+    /// Minimum similarity between 2 files to show their differences
+    /// Computed as length of common content / min length of inputs
+    pub similar_ratio_min: f64,
 }
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
             content_max_size: MemSize::new(32 * 1024),
+            similar_ratio_min: 0.7,
         }
     }
 }
@@ -378,6 +382,7 @@ pub mod tests {
             theme: Some(PathBuf::from("/path/to/theme/file")),
             tui: TuiConfig {
                 content_max_size: MemSize::new(16 * 1024),
+                similar_ratio_min: 0.9,
             },
         };
         assert_eq!(cfg, expected_cfg);

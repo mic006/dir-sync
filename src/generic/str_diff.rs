@@ -183,10 +183,10 @@ impl DiffMultilineBuilder {
 ///
 /// If criteria are not met, the input strings are simply output as independent strings
 /// with everything being different
-struct DiffEngine {
+pub struct DiffEngine {
     /// Minimum similarity between the 2 inputs
     /// Computed as length of common chunks / min length of inputs
-    similar_ratio_min: f64,
+    pub similar_ratio_min: f64,
 }
 impl DiffEngine {
     /// Compared two strings
@@ -194,6 +194,7 @@ impl DiffEngine {
     /// Return the content of each string, ready for side-by-side rendering
     /// If inputs are too different, the two strings are simply output as independent strings
     /// with everything being different
+    #[must_use]
     pub fn diff(&self, a: &str, b: &str) -> (DiffMultiline, DiffMultiline) {
         if a.is_empty() || b.is_empty() {
             return (a.into(), b.into());

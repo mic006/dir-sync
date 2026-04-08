@@ -1,7 +1,7 @@
 //! TUI application context for diff handling
 
 use std::collections::HashMap;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use futures::StreamExt as _;
@@ -15,7 +15,9 @@ use crate::generic::format::owner::OwnerGroupDb;
 use crate::generic::format::permissions::format_file_type_and_permissions;
 use crate::generic::format::size::format_file_size;
 use crate::generic::format::timestamp::format_opt_ts;
-use crate::generic::str_diff::{DiffChunkType, DiffLine, DiffMultiline, diff_fixed_ascii_str};
+use crate::generic::str_diff::{
+    DiffChunkType, DiffEngine, DiffLine, DiffMultiline, diff_fixed_ascii_str,
+};
 use crate::proto::{
     ActionReq, ActionRsp, MyDirEntryExt as _, Specific, TimestampOrd as _, action::FileReadReq,
 };
@@ -45,8 +47,8 @@ impl RenderDiffType {
 pub enum ContentState {
     /// No content: directory, empty file
     Empty,
-    /// Content requested to tree, waiting for response
-    Waiting,
+    /// Content requested to tree, waiting for response. Give file hash as hex string
+    Waiting(String),
     /// String content, ready for comparison with counterpart (`DiffEntryContextDiff`)
     Str(String),
     /// Content ready for rendering, single line (symlink)
@@ -88,7 +90,7 @@ pub trait DiffEntryContextRender {
     fn get_content_nb_lines(&self) -> usize;
 
     /// Set raw content for the given tree
-    fn set_raw_content(&mut self, tree_index: usize, content: Vec<u8>);
+    fn set_raw_content(&mut self, tree_index: usize, content: Vec<u8>, engine: &DiffEngine);
 }
 
 /// When one `DiffEntry` can show comparison (2 different entries)
@@ -121,8 +123,46 @@ impl DiffEntryContextRender for DiffEntryContextDiff {
         self.content_nb_lines
     }
 
-    fn set_raw_content(&mut self, _tree_index: usize, _content: Vec<u8>) {
-        todo!();
+    fn set_raw_content(&mut self, tree_index: usize, content: Vec<u8>, engine: &DiffEngine) {
+        // update received entry
+        {
+            let content_state = &mut self.content.as_mut().unwrap()[tree_index];
+            let ContentState::Waiting(hash) = std::mem::replace(content_state, ContentState::Empty)
+            else {
+                panic!("invalid state, content shall be 'Waiting' when receiving file content");
+            };
+
+            *content_state = match raw_content_to_content_state(content) {
+                Ok(s) => ContentState::Str(s),
+                Err(()) => ContentState::Binary(hash),
+            };
+            self.content_nb_lines = self.content_nb_lines.max(content_state.nb_lines());
+        }
+
+        // compare content if possible
+        {
+            let content_state = self.content.as_mut().unwrap();
+            match (&content_state[0], &content_state[1]) {
+                (ContentState::Str(s0), ContentState::Str(s1)) => {
+                    // two strings, compare them
+                    let (d0, d1) = engine.diff(s0, s1);
+                    content_state[0] = ContentState::RenderMulti(d0);
+                    content_state[1] = ContentState::RenderMulti(d1);
+                }
+                (ContentState::Str(s0), ContentState::Binary(_)) => {
+                    // string vs binary => render string as all diff
+                    content_state[0] = ContentState::RenderMulti(DiffMultiline::from(s0.as_str()));
+                }
+                (ContentState::Binary(_), ContentState::Str(s1)) => {
+                    // string vs binary => render string as all diff
+                    content_state[1] = ContentState::RenderMulti(DiffMultiline::from(s1.as_str()));
+                }
+                _ => {
+                    // either 2 binaries, or one content not received yet
+                    // => nothing to do
+                }
+            }
+        }
     }
 }
 
@@ -150,8 +190,18 @@ impl DiffEntryContextRender for DiffEntryContextConflict {
         self.content_nb_lines
     }
 
-    fn set_raw_content(&mut self, _tree_index: usize, _content: Vec<u8>) {
-        todo!();
+    fn set_raw_content(&mut self, tree_index: usize, content: Vec<u8>, _engine: &DiffEngine) {
+        let content_state = &mut self.content.as_mut().unwrap()[tree_index];
+        let ContentState::Waiting(hash) = std::mem::replace(content_state, ContentState::Empty)
+        else {
+            panic!("invalid state, content shall be 'Waiting' when receiving file content");
+        };
+
+        *content_state = match raw_content_to_content_state(content) {
+            Ok(s) => ContentState::RenderMulti(DiffMultiline::from(s.as_str())),
+            Err(()) => ContentState::Binary(hash),
+        };
+        self.content_nb_lines = self.content_nb_lines.max(content_state.nb_lines());
     }
 }
 
@@ -197,6 +247,20 @@ impl Deref for DiffEntryContext {
         }
     }
 }
+impl DerefMut for DiffEntryContext {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            DiffEntryContext::None => {
+                panic!("context shall be created first by gen_entry_context()")
+            }
+            DiffEntryContext::ConflictAlways(diff_entry_context_conflict) => {
+                diff_entry_context_conflict
+            }
+            DiffEntryContext::Conflict(diff_entry_context_diff)
+            | DiffEntryContext::OldNewDiff(diff_entry_context_diff) => diff_entry_context_diff,
+        }
+    }
+}
 
 /// Application runtime context (displaying diffs)
 pub struct DiffContext {
@@ -209,6 +273,8 @@ pub struct DiffContext {
     pub list_panel: ListPanelSelection,
     /// Content list panel
     pub content_panel: ListPanel,
+    /// Compare file content
+    diff_engine: DiffEngine,
     /// List of index of `diffs` entries which have no sync action
     conflicts_indexes: Vec<usize>,
     /// List of index of `diffs` entries which have a sync action
@@ -261,6 +327,10 @@ impl DiffContext {
             })
             .collect();
 
+        let diff_engine = DiffEngine {
+            similar_ratio_min: config.tui.similar_ratio_min,
+        };
+
         Self {
             run_ctx: ctx.run_ctx,
             config,
@@ -268,6 +338,7 @@ impl DiffContext {
             diffs: ctx.diffs,
             list_panel,
             content_panel,
+            diff_engine,
             conflicts_indexes,
             resolved_indexes,
             entries_context,
@@ -280,7 +351,39 @@ impl DiffContext {
     pub async fn handle_received_content(&mut self) {
         let (tree_index, event) = self.content_receiver.next().await.unwrap();
 
-        log::debug!("Received {event:?} from tree {tree_index}");
+        match event {
+            ActionRsp::FileData(file_data) => {
+                if let Some(diff_index) = self.relpath_to_index.get(&file_data.rel_path) {
+                    log::debug!(
+                        "handling received content from tree #{}: path {}",
+                        tree_index + 1,
+                        file_data.rel_path
+                    );
+                    self.entries_context[*diff_index].set_raw_content(
+                        tree_index,
+                        file_data.data,
+                        &self.diff_engine,
+                    );
+                } else {
+                    log::error!(
+                        "invalid content received from tree #{}: unknown path {}",
+                        tree_index + 1,
+                        file_data.rel_path
+                    );
+                }
+            }
+            ActionRsp::Error(err) => {
+                log::error!(
+                    "error while getting content from tree #{} for {}: {}",
+                    tree_index + 1,
+                    err.rel_path,
+                    err.message
+                );
+            }
+            ActionRsp::EndMarker(_) => {
+                log::error!("unexpected end_marker when from tree #{}", tree_index + 1);
+            }
+        }
     }
 
     pub fn set_view(&mut self, view: View) {
@@ -684,7 +787,7 @@ impl DiffContext {
                                 rel_path: diff_entry.rel_path.clone(),
                             })));
                         // wait for response
-                        ContentState::Waiting
+                        ContentState::Waiting(hash_to_string(&regular_data.hash))
                     }
                 }
                 Specific::Symlink(target) => ContentState::RenderSingle(target.clone()),
