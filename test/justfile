@@ -27,6 +27,9 @@ test_dir := "/tmp/autoclean/dir-sync-test"
     ln -sf modif_b {{test_dir}}/b/link_conflict
     ln -sf file_conflict.txt {{test_dir}}/c/link_valid
     rmdir {{test_dir}}/a/dir/subdir_empty
+    \cp {{test_dir}}/b/content_b.txt {{test_dir}}/b/content_a.txt
+    \cp {{test_dir}}/c/content_a.txt {{test_dir}}/c/content_l.txt
+    \cp {{test_dir}}/a/binary_b.bin {{test_dir}}/a/binary_a.bin
 
 # run diff operation, local access
 @diff_local:

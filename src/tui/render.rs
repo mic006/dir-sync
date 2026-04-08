@@ -232,7 +232,15 @@ impl App {
         if let Some(context) = &mut self.context
             && context.list_panel.content_length > 0
         {
-            context.content_panel.normalize(area.height.into());
+            // adjust content panel settings to content to display
+            let content_nb_lines = context.get_content_nb_lines(self.view);
+            if context.content_panel.content_length != content_nb_lines {
+                context.content_panel.reset(content_nb_lines);
+            }
+            // adjust content panel size to available area, excluding the metadata
+            context
+                .content_panel
+                .normalize((area.height as usize).saturating_sub(NB_METADATA_LINES));
 
             for tree_index in 0..nb_trees {
                 let (render_type, render_ctx, content_panel) =

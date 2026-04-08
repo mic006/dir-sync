@@ -126,7 +126,8 @@ impl DiffEntryContextRender for DiffEntryContextDiff {
     fn set_raw_content(&mut self, tree_index: usize, content: Vec<u8>, engine: &DiffEngine) {
         // update received entry
         {
-            let content_state = &mut self.content.as_mut().unwrap()[tree_index];
+            let content_state =
+                &mut self.content.as_mut().unwrap()[self.categ.get(tree_index) as usize];
             let ContentState::Waiting(hash) = std::mem::replace(content_state, ContentState::Empty)
             else {
                 panic!("invalid state, content shall be 'Waiting' when receiving file content");
@@ -292,7 +293,7 @@ pub struct DiffContext {
 impl DiffContext {
     pub fn new(ctx: InitContext, config: TuiConfigRef) -> Self {
         let list_panel = ListPanelSelection::new(ctx.diffs.len());
-        let content_panel = ListPanel::new(0); // TODO
+        let content_panel = ListPanel::new(0);
 
         let mut conflicts_indexes = Vec::with_capacity(ctx.diffs.len());
         let mut resolved_indexes = Vec::with_capacity(ctx.diffs.len());
@@ -366,9 +367,6 @@ impl DiffContext {
                         file_data.data,
                         &self.diff_engine,
                     );
-                    // update content panel to display selected content
-                    self.content_panel
-                        .reset(self.entries_context[*diff_index].get_content_nb_lines());
                 } else {
                     log::error!(
                         "invalid content received from tree #{}: unknown path {}",
@@ -521,6 +519,13 @@ impl DiffContext {
     fn add_index(list: &mut Vec<usize>, index: usize) {
         let idx = list.binary_search(&index).unwrap_err();
         list.insert(idx, index);
+    }
+
+    /// Get number of lines of content to display
+    pub fn get_content_nb_lines(&self, view: View) -> usize {
+        let diff_index = self.get_diff_entry_index_selected(view);
+        assert!(diff_index < self.diffs.len());
+        self.entries_context[diff_index].get_content_nb_lines()
     }
 
     /// Get rendering info for one element
