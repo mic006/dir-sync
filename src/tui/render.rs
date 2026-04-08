@@ -17,6 +17,7 @@ use super::diff_context::{
 };
 use super::list_panel::ListPanel;
 use super::rich_text::{Effect, RichSpan, RichText};
+use super::scroll_bar::ScrollBar;
 use super::theme::AppTheme;
 use super::{App, View, help};
 
@@ -197,15 +198,12 @@ impl App {
             }
 
             // render scroll bar on top of content
-            if let Some(scroll) = context.list_panel.scroll_bar() {
-                // render scroll bar
-                let sb_style = self.config_tui.theme.bar_scroll_bar_style();
-                for (i, c) in scroll {
-                    buf[(area.right() - 1, area.y + i as u16)]
-                        .set_style(sb_style)
-                        .set_char(c);
-                }
-            }
+            Self::render_scroll_bar(
+                context.list_panel.scroll_bar(),
+                self.config_tui.theme.bar_scroll_bar_style(),
+                area,
+                buf,
+            );
         }
     }
 
@@ -265,6 +263,14 @@ impl App {
                         self.config_tui.theme.diff_content_info_style(),
                         self.config_tui.theme.diff_content_line_num_style(),
                         tree_index,
+                        content_area,
+                        buf,
+                    );
+
+                    // render scroll bar on top of content
+                    Self::render_scroll_bar(
+                        context.content_panel.scroll_bar(),
+                        self.config_tui.theme.bar_scroll_bar_style(),
                         content_area,
                         buf,
                     );
@@ -380,6 +386,23 @@ impl App {
         areas
     }
 
+    /// Render scroll bar in the area
+    fn render_scroll_bar(
+        scroll_bar: Option<ScrollBar>,
+        sb_style: Style,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        // render scroll bar on top of content
+        if let Some(scroll_bar) = scroll_bar {
+            let right_col = area.right() - 1;
+            for (i, c) in scroll_bar {
+                buf[(right_col, area.y + i as u16)]
+                    .set_style(sb_style)
+                    .set_char(c);
+            }
+        }
+    }
     /// Render Help screen
     ///
     /// - render normal screen
