@@ -129,6 +129,7 @@ impl From<&str> for DiffMultiline {
 struct DiffMultilineBuilder {
     lines: Vec<DiffLineNum>,
     current_line: Option<DiffLine>,
+    /// index of the current line, 1-based
     current_line_num: usize,
 }
 impl Default for DiffMultilineBuilder {
@@ -154,9 +155,18 @@ impl DiffMultilineBuilder {
             .append_str(kind, s);
     }
 
+    /// Realign display if the current line is empty
+    ///
+    /// Note: otherwise, display alignment will be done on next `end_of_line`
+    fn realign(&mut self, display_line_num: usize) {
+        if self.current_line.is_none() {
+            self.lines.resize_with(display_line_num, Default::default);
+        }
+    }
+
     /// Add end of line
     ///
-    /// Add padding lines as needed to realign the display
+    /// Add padding lines as needed to realign the display after adding the line break
     fn end_of_line(&mut self, display_line_num: Option<usize>) {
         let line = self.current_line.take().unwrap_or_default();
         self.lines.push(DiffLineNum::Line {
@@ -210,6 +220,12 @@ impl DiffEngine {
             match chunk {
                 dissimilar::Chunk::Equal(s) => {
                     common_count += s.len();
+
+                    {
+                        let display_line_num = diff_a.nb_lines().max(diff_b.nb_lines());
+                        diff_a.realign(display_line_num);
+                        diff_b.realign(display_line_num);
+                    }
 
                     for line in s.split_inclusive('\n') {
                         let line_break = line.ends_with('\n');
@@ -400,6 +416,105 @@ mod tests {
                 "Completely different and long string",
             )],
         )];
+        assert_eq!(diff_a, expected_a);
+        assert_eq!(diff_b, expected_b);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn test_diff_engine_realign() {
+        let engine = DiffEngine {
+            similar_ratio_min: 0.5,
+        };
+        let a = r#"// This is a comment, and is ignored by the compiler.
+// You can test this code by clicking the "Run" button over there ->
+// or if you prefer to use your keyboard, you can use the "Ctrl + Enter"
+// shortcut.
+
+// This code is editable, feel free to hack it!
+// You can always return to the original code by clicking the "Reset" button ->
+
+// This is the main function.
+fn main() {
+    // Statements here are executed when the compiled binary is called.
+
+    // Print text to the console.
+    println!("Hello World!");
+}
+"#;
+        let b = r#"// This is a comment, and is ignored by the compiler.
+// You can test this code by clicking the "Run" button over there ->
+// shortcut.
+
+// This code is editable, so we can add
+// some
+// text! Feel free to **hack** it!
+// You can always return to the original code by clicking the "Reset" button ->
+
+// This is the main function of the application.
+fn main() {
+    // Statements here are executed when the compiled binary is called.
+
+    // new comment
+
+    // Print text to the console.
+    println!("Hello World!");
+    println!("I'm a Rustacean!");
+}
+"#;
+
+        let (diff_a, diff_b) = engine.diff(a, b);
+
+        println!("diff_a={diff_a:?}");
+        println!("diff_b={diff_b:?}");
+        #[rustfmt::skip]
+        let expected_a = vec![
+            (1, vec![(DiffChunkType::Common, "// This is a comment, and is ignored by the compiler.")]),
+            (2, vec![(DiffChunkType::Common, "// You can test this code by clicking the \"Run\" button over there ->")]),
+            (3, vec![(DiffChunkType::Differ, "// or if you prefer to use your keyboard, you can use the \"Ctrl + Enter\"")]),
+            (4, vec![(DiffChunkType::Common, "// shortcut.")]),
+            (5, vec![]),
+            (6, vec![(DiffChunkType::Common, "// This code is editable, "), (DiffChunkType::Differ, "f"), (DiffChunkType::Common, "eel free to hack it!")]),
+            (0, vec![]), // Padding
+            (0, vec![]), // Padding
+            (7, vec![(DiffChunkType::Common, "// You can always return to the original code by clicking the \"Reset\" button ->")]),
+            (8, vec![]),
+            (9, vec![(DiffChunkType::Common, "// This is the main function.")]),
+            (10, vec![(DiffChunkType::Common, "fn main() {")]),
+            (11, vec![(DiffChunkType::Common, "    // Statements here are executed when the compiled binary is called.")]),
+            (12, vec![]),
+            (0, vec![]), // Padding
+            (0, vec![]), // Padding
+            (13, vec![(DiffChunkType::Common, "    // Print text to the console.")]),
+            (14, vec![(DiffChunkType::Common, "    println!(\"Hello World!\");")]),
+            (0, vec![]), // Padding
+            (15, vec![(DiffChunkType::Common, "}")]),
+            (16, vec![]),
+        ];
+        #[rustfmt::skip]
+        let expected_b = vec![
+            (1, vec![(DiffChunkType::Common, "// This is a comment, and is ignored by the compiler.")]),
+            (2, vec![(DiffChunkType::Common, "// You can test this code by clicking the \"Run\" button over there ->")]),
+            (0, vec![]), // Padding
+            (3, vec![(DiffChunkType::Common, "// shortcut.")]),
+            (4, vec![]),
+            (5, vec![(DiffChunkType::Common, "// This code is editable, "), (DiffChunkType::Differ, "so we can add")]),
+            (6, vec![(DiffChunkType::Differ, "// some")]),
+            (7, vec![(DiffChunkType::Differ, "// text! F"), (DiffChunkType::Common, "eel free to "), (DiffChunkType::Differ, "**"), (DiffChunkType::Common, "hack"), (DiffChunkType::Differ, "**"), (DiffChunkType::Common, " it!")]),
+            (8, vec![(DiffChunkType::Common, "// You can always return to the original code by clicking the \"Reset\" button ->")]),
+            (9, vec![]),
+            (10, vec![(DiffChunkType::Common, "// This is the main function"), (DiffChunkType::Differ, " of the application"), (DiffChunkType::Common, ".")]),
+            (11, vec![(DiffChunkType::Common, "fn main() {")]),
+            (12, vec![(DiffChunkType::Common, "    // Statements here are executed when the compiled binary is called.")]),
+            (13, vec![]),
+            (14, vec![(DiffChunkType::Differ, "    // new comment")]),
+            (15, vec![]),
+            (16, vec![(DiffChunkType::Common, "    // Print text to the console.")]),
+            (17, vec![(DiffChunkType::Common, "    println!(\"Hello World!\");")]),
+            (18, vec![(DiffChunkType::Differ, "    println!(\"I'm a Rustacean!\");")]),
+            (19, vec![(DiffChunkType::Common, "}")]),
+            (20, vec![]),
+        ];
         assert_eq!(diff_a, expected_a);
         assert_eq!(diff_b, expected_b);
     }
