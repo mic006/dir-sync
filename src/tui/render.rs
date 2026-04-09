@@ -72,7 +72,7 @@ impl App {
     fn render_screen_normal_top_bar(&self, area: Rect, buf: &mut Buffer) {
         let bar_style = self.config_tui.theme.bar_style();
 
-        let title = if self.view.is_diff() {
+        let title = if self.arg.read_only {
             " dir-diff "
         } else {
             " dir-sync "
