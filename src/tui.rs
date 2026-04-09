@@ -13,6 +13,7 @@ use crate::generic::task_tracker::{
 };
 use crate::sync_exec::SyncStat;
 use crate::sync_plan::SyncMode;
+use crate::tree::TreePath;
 use crate::{Arg, RunContext};
 
 use diff_context::DiffContext;
@@ -127,6 +128,8 @@ struct App {
     config: ConfigRef,
     /// Terminal UI configuration
     config_tui: TuiConfigRef,
+    /// Path for each tree
+    tree_paths: Vec<TreePath>,
     /// Indication that application shall run / exit
     running: bool,
     /// Redraw required on next event loop
@@ -165,11 +168,18 @@ impl App {
 
         let (task_event_sender, task_event_receiver) = flume::bounded(1);
 
+        let tree_paths = arg
+            .dirs
+            .iter()
+            .map(|p| TreePath::new(p))
+            .collect::<Vec<_>>();
+
         Self {
             task_tracker,
             arg,
             config,
             config_tui,
+            tree_paths,
             running: true,
             redraw: true,
             screen: Screen::Normal,

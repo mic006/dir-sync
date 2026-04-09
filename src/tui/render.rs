@@ -213,8 +213,8 @@ impl App {
     fn render_screen_normal_middle_bar(&self, area: Rect, buf: &mut Buffer) {
         let bar_style = self.config_tui.theme.bar_style();
         let areas = self.split_area_per_tree(area, buf);
-        for (i, (area, dir)) in std::iter::zip(areas.iter(), self.arg.dirs.iter()).enumerate() {
-            Line::styled(format!("#{} {dir}", i + 1), bar_style)
+        for (i, (area, tree)) in std::iter::zip(areas.iter(), self.tree_paths.iter()).enumerate() {
+            Line::styled(format!("#{} {}", i + 1, tree.fqn), bar_style)
                 .centered()
                 .render(*area, buf);
         }
