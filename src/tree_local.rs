@@ -288,7 +288,20 @@ impl ActionCtx {
         }
 
         // update entry metadata in snap
-        let entry = self.fs_tree.stat(&req.rel_path)?;
+        let mut entry = self.fs_tree.stat(&req.rel_path)?;
+        // for regular files with metadata update only, need to propagate the checksum
+        if let Some(Specific::Regular(regular_data)) = &mut entry.specific
+            && regular_data.size != 0
+        {
+            let Some(Specific::Regular(reference_data)) = &new.specific else {
+                anyhow::bail!("file type mismatch");
+            };
+            anyhow::ensure!(
+                regular_data.size == reference_data.size,
+                "file size mismatch"
+            );
+            regular_data.hash.clone_from(&reference_data.hash);
+        }
         self.snap
             .lock()
             .unwrap()
