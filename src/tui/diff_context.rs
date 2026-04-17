@@ -479,6 +479,7 @@ impl DiffContext {
             _ => unreachable!("context is invalid for the unhandled views"),
         };
         self.list_panel.adjust_content_length(list.len());
+        self.on_selection_update(view);
     }
 
     /// Manage digit keys to choose sync action
