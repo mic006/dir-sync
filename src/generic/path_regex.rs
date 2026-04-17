@@ -1,9 +1,23 @@
 //! Path regex manipulation
 
-/// Builder for regex matching some name/paths
-pub struct PathRegexBuilder {
+struct RegexConfig {
     /// Function to generate one regex block from a path pattern
     pattern_builder: fn(&str) -> String,
+    /// Final pattern to add to the regex
+    final_pattern: &'static str,
+}
+const REGEX_CONFIG_NAME: RegexConfig = RegexConfig {
+    pattern_builder: gen_name_pattern,
+    final_pattern: "",
+};
+const REGEX_CONFIG_PATH: RegexConfig = RegexConfig {
+    pattern_builder: gen_path_pattern,
+    final_pattern: "(?:/.*)?", // accept any sub path of the regex path
+};
+
+/// Builder for regex matching some name/paths
+pub struct PathRegexBuilder {
+    config: &'static RegexConfig,
     /// Build final regex matching any input pattern
     re: String,
     /// First / subsequent pattern insertion
@@ -17,7 +31,7 @@ impl PathRegexBuilder {
     #[must_use]
     pub fn new_name() -> Self {
         Self {
-            pattern_builder: gen_name_pattern,
+            config: &REGEX_CONFIG_NAME,
             re: String::with_capacity(4096),
             subsequent: false,
         }
@@ -30,7 +44,7 @@ impl PathRegexBuilder {
     #[must_use]
     pub fn new_path() -> Self {
         Self {
-            pattern_builder: gen_path_pattern,
+            config: &REGEX_CONFIG_PATH,
             re: String::with_capacity(4096),
             subsequent: false,
         }
@@ -44,7 +58,7 @@ impl PathRegexBuilder {
             self.re.push_str("^(?:");
             self.subsequent = true;
         }
-        self.re.push_str(&(self.pattern_builder)(pattern));
+        self.re.push_str(&(self.config.pattern_builder)(pattern));
     }
 
     /// Generate the regex matching any of the input patterns
@@ -60,7 +74,9 @@ impl PathRegexBuilder {
             // no pattern added
             return Ok(None);
         }
-        self.re.push_str(")$");
+        self.re.push(')');
+        self.re.push_str(self.config.final_pattern);
+        self.re.push('$');
         Ok(Some(regex::Regex::new(&self.re)?))
     }
 }
@@ -130,6 +146,8 @@ mod tests {
         let re = builder.finalize().unwrap().unwrap();
 
         assert!(re.is_match("./xxx/bar"));
+        assert!(re.is_match("./xxx/bar/sub")); // subfolder of an ignored path
+        assert!(!re.is_match("./xxx/bar_other"));
         assert!(!re.is_match("./bar"));
         assert!(!re.is_match("./xxx/yyy/bar"));
         assert!(re.is_match("./foo/$baz/toto/xxx.gz"));

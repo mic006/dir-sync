@@ -373,7 +373,7 @@ pub mod tests {
                     Profile {
                         include: ZeroOrOneOrList::One(String::from("default")),
                         ignore_name: vec![String::from("cache")],
-                        ignore_path: vec![String::from("*/bar")],
+                        ignore_path: vec![String::from("*/bar"), String::from("folder")],
                         white_list: vec![String::from("folder/foo~/toto.bak")],
                     },
                 ),
@@ -409,7 +409,10 @@ pub mod tests {
                 String::from(".git"),
             ]
         );
-        assert_eq!(config.filter_ignore_path, vec![String::from("*/bar")]);
+        assert_eq!(
+            config.filter_ignore_path,
+            vec![String::from("*/bar"), String::from("folder")]
+        );
         assert_eq!(
             config.filter_white_list,
             vec![String::from("./folder/foo~/toto.bak")]
@@ -444,5 +447,6 @@ pub mod tests {
         assert!(!file_matcher.is_ignored("./folder/foo~"));
         assert!(!file_matcher.is_ignored("./folder/foo~/toto.bak"));
         assert!(file_matcher.is_ignored("./folder/foo~/titi.bak"));
+        assert!(file_matcher.is_ignored("./folder/toto"));
     }
 }
