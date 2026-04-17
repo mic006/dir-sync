@@ -67,13 +67,11 @@ impl TreeRemote {
         // 1. spawn instance
         log::info!("tree_remote[{fqn}]: spawning child process over ssh");
         // use same path as the one used on local machine
-        // TODO: make it configurable ?
-        let dir_sync_path = std::env::args()
-            .next()
-            .unwrap_or_else(|| "dir-sync".to_string());
+        let dir_sync_path = std::env::current_exe()?;
+        let dir_sync_path = dir_sync_path.to_str().unwrap();
         let mut cmd = Command::new("ssh");
         cmd.arg(&tp.hostname)
-            .args(["-e", "none", &dir_sync_path, "--remote"])
+            .args(["-e", "none", dir_sync_path, "--remote"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
