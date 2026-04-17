@@ -98,7 +98,10 @@ impl SyncPlanCtx {
             }
         }
 
-        if self.mode == SyncMode::Latest {
+        if self.mode == SyncMode::Latest
+            // if diff is limited to the mtime, take latest mtime
+            || diff_entry.diff == crate::diff::DiffType::MTIME
+        {
             // Get the entry with the latest modification time
             let mut latest_entry: Option<&MyDirEntry> = None;
             let mut source_index = 0u8;
