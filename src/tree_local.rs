@@ -242,9 +242,7 @@ impl ActionCtx {
         let new = req.metadata.as_ref().unwrap();
         let diff = current.map_or(DiffType::all(), |current| diff::diff_entries(&current, new));
 
-        // IMPORTANT: for a regular file, current does not contain file hash
-        // so CONTENT bit shall be ignored for regular files
-        if diff.contains(DiffType::TYPE) || (diff.contains(DiffType::CONTENT) && !new.is_file()) {
+        if diff.intersects(DiffType::TYPE | DiffType::CONTENT) {
             // create entry as tmp file, set metadata and rename it to final name
 
             let mut temp_file = PathBuf::from(&req.rel_path);

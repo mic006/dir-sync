@@ -64,7 +64,10 @@ pub fn diff_entries(a: &MyDirEntry, b: &MyDirEntry) -> DiffType {
         (Specific::Directory(_), Specific::Directory(_)) => (),
         (Specific::Regular(regular_data_a), Specific::Regular(regular_data_b)) => {
             if regular_data_a.size != regular_data_b.size
-                || regular_data_a.hash != regular_data_b.hash
+                // compares file hash only when present
+                || (!regular_data_a.hash.is_empty()
+                    && !regular_data_b.hash.is_empty()
+                    && regular_data_a.hash != regular_data_b.hash)
             {
                 diff.insert(DiffType::CONTENT);
             }

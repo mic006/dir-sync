@@ -749,7 +749,7 @@ impl Drop for FsFile {
 mod tests {
     use super::*;
     use blake3::Hash;
-    use std::fs;
+    use std::{fs, os::linux::fs::MetadataExt};
     use tempfile::TempDir;
 
     #[test]
@@ -887,6 +887,88 @@ mod tests {
         // Verify the file is renamed
         assert!(!temp_dir.path().join("original_name.txt").exists());
         assert!(temp_dir.path().join("new_name.txt").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_tree_create_empty_file() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let path = temp_dir.path().join("name.txt");
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a file
+        let tmp_file = fs_tree.create_tmp(".", 0)?;
+        fs_tree.commit_tmp("name.txt", tmp_file)?;
+
+        // Verify the file exists and is empty
+        assert!(path.exists());
+        let metadata = path.metadata()?;
+        assert_eq!(metadata.st_size(), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_tree_overwrite_empty_file() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let path_original = temp_dir.path().join("original.txt");
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a file
+        let tmp_file = fs_tree.create_tmp(".", 0)?;
+        fs_tree.commit_tmp("original.txt", tmp_file)?;
+
+        // Verify the file exists and is empty
+        assert!(path_original.exists());
+        let metadata = path_original.metadata()?;
+        assert_eq!(metadata.st_size(), 0);
+
+        // Create a file with content
+        let data = b"Hello, World!";
+        let tmp_file = fs_tree.create_tmp(".", data.len() as u64)?;
+        tmp_file.write(data)?;
+        fs_tree.commit_tmp("overwrite.txt", tmp_file)?;
+
+        // Overwrite empty file
+        fs_tree.rename("overwrite.txt", "original.txt")?;
+
+        // Verify the file exists and has expected length
+        assert!(path_original.exists());
+        let metadata = path_original.metadata()?;
+        assert_eq!(metadata.st_size(), data.len() as u64);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_tree_overwrite_with_empty_file() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let path_original = temp_dir.path().join("original.txt");
+        let fs_tree = FsTree::new(temp_dir.path().to_str().unwrap())?;
+
+        // Create a file with content
+        let data = b"Hello, World!";
+        let tmp_file = fs_tree.create_tmp(".", data.len() as u64)?;
+        tmp_file.write(data)?;
+        fs_tree.commit_tmp("original.txt", tmp_file)?;
+
+        // Verify the file exists and has expected length
+        assert!(path_original.exists());
+        let metadata = path_original.metadata()?;
+        assert_eq!(metadata.st_size(), data.len() as u64);
+
+        // Create an empty file
+        let tmp_file = fs_tree.create_tmp(".", 0)?;
+        fs_tree.commit_tmp("overwrite.txt", tmp_file)?;
+
+        // Overwrite with empty file (truncating)
+        fs_tree.rename("overwrite.txt", "original.txt")?;
+
+        // Verify the file exists and is empty
+        assert!(path_original.exists());
+        let metadata = path_original.metadata()?;
+        assert_eq!(metadata.st_size(), 0);
 
         Ok(())
     }

@@ -31,6 +31,7 @@ test_dir := "/tmp/autoclean/dir-sync-test"
     touch {{test_dir}}/b/content_b.txt
     \cp {{test_dir}}/c/content_a.txt {{test_dir}}/c/content_l.txt
     \cp {{test_dir}}/a/binary_b.bin {{test_dir}}/a/binary_a.bin
+    truncate -s 0 {{test_dir}}/c/binary_b.bin
 
 # run diff operation, local access
 @diff_local:
