@@ -183,7 +183,7 @@ impl MyDirEntryExt for MyDirEntry {
             anyhow::bail!("invalid relative path {rel_path}, cannot find parent directory");
         };
         let Some(Specific::Directory(dir_data)) = &mut parent_entry.specific else {
-            anyhow::bail!("invalid relative path {rel_path}, cannot find parent directory");
+            anyhow::bail!("invalid relative path {rel_path}, parent is not a directory");
         };
 
         // find entry position

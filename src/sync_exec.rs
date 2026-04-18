@@ -125,6 +125,8 @@ impl<'a> SyncExecCtx<'a> {
             self.entry_delete(*diff_entry_idx).await?;
         }
 
+        let end_marker = Arc::new(ActionReq::EndMarker(PROTO_NULL_VALUE));
+
         // 2nd pass: update entries, per source tree
         for (src_idx, act_update) in self.act_update.iter().enumerate() {
             // update all entries for source src_idx
@@ -135,12 +137,25 @@ impl<'a> SyncExecCtx<'a> {
             // send end marker to source tree
             log::debug!("sync_exec[{}]: sending end_marker", src_idx + 1);
             self.tree_senders[src_idx]
-                .send_async(Arc::new(ActionReq::EndMarker(PROTO_NULL_VALUE)))
+                .send_async(end_marker.clone())
                 .await?;
             // wait for end marker reception
             let marker = end_marker_notif_receiver.recv_async().await?;
             debug_assert!(marker == src_idx);
             // read data have been completely processed
+        }
+
+        // synchro: wait for all trees to complete their tasks
+        {
+            for tree_sender in self.tree_senders.iter() {
+                tree_sender.send_async(end_marker.clone()).await?;
+            }
+            let mut completed_bitmap = 0;
+            let all_bitmap = (1 << self.trees.len()) - 1;
+            while completed_bitmap != all_bitmap {
+                let marker = end_marker_notif_receiver.recv_async().await?;
+                completed_bitmap |= 1 << marker;
+            }
         }
 
         Ok(sync_stat)
@@ -491,10 +506,10 @@ mod tests {
             panic!("Expected DeleteFile, got {req:?}");
         }
 
-        // Expect end marker on tree1 (source)
+        // 2nd pass
+        // Expect EndMarker on tree1
         let req = t1_req_rx.recv_async().await?;
         if let ActionReq::EndMarker(_) = &*req {
-            // Send back end marker response
             t1_rsp_tx
                 .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
                 .await?;
@@ -502,10 +517,30 @@ mod tests {
             panic!("Expected EndMarker on tree1, got {req:?}");
         }
 
-        // Expect end marker on tree2
+        // Expect EndMarker on tree2
         let req = t2_req_rx.recv_async().await?;
         if let ActionReq::EndMarker(_) = &*req {
-            // Send back end marker response
+            t2_rsp_tx
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree2, got {req:?}");
+        }
+
+        // synchro step
+        // Expect EndMarker on tree1
+        let req = t1_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            t1_rsp_tx
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree1, got {req:?}");
+        }
+
+        // Expect EndMarker on tree2
+        let req = t2_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
             t2_rsp_tx
                 .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
                 .await?;
@@ -580,6 +615,28 @@ mod tests {
             panic!("Expected CreateUpdateFile on tree2, got {req:?}");
         }
 
+        // 2nd pass
+        // Expect EndMarker on tree1
+        let req = t1_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            t1_rsp_tx
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree1, got {req:?}");
+        }
+
+        // Expect EndMarker on tree2
+        let req = t2_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            t2_rsp_tx
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree2, got {req:?}");
+        }
+
+        // synchro step
         // Expect EndMarker on tree1
         let req = t1_req_rx.recv_async().await?;
         if let ActionReq::EndMarker(_) = &*req {
@@ -608,6 +665,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn test_sync_exec_update_metadata_dir_symlink() -> anyhow::Result<()> {
         crate::generic::test::log_init();
         let mut task_tracker_main = TaskTrackerMain::default();
@@ -700,6 +758,28 @@ mod tests {
             panic!("Expected CreateUpdateMetadata for link, got {req:?}");
         }
 
+        // 2nd pass
+        // Expect EndMarker on tree1
+        let req = t1_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            t1_rsp_tx
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree1, got {req:?}");
+        }
+
+        // Expect EndMarker on tree2
+        let req = t2_req_rx.recv_async().await?;
+        if let ActionReq::EndMarker(_) = &*req {
+            t2_rsp_tx
+                .send_async(ActionRsp::EndMarker(PROTO_NULL_VALUE))
+                .await?;
+        } else {
+            panic!("Expected EndMarker on tree2, got {req:?}");
+        }
+
+        // synchro step
         // Expect EndMarker on tree1
         let req = t1_req_rx.recv_async().await?;
         if let ActionReq::EndMarker(_) = &*req {
